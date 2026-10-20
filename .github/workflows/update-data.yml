@@ -1,0 +1,37 @@
+name: 更新資料
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安裝套件
+        run: pip install xarray cfgrib eccodes numpy
+
+      - name: 下載路徑預報
+        run: python scripts/fetch_tracks.py
+
+      - name: 下載 GFS 風場
+        run: python scripts/fetch_wind.py
+        continue-on-error: true
+
+      - name: 存回儲存庫
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "自動更新資料 $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
