@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>熱帶氣旋觀測站</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-velocity@2.1.4/dist/leaflet-velocity.min.css">
+<style>
+  :root {
+    --panel: rgba(244, 247, 249, .94);
+    --panel-solid: #f4f7f9;
+    --ink: #13283a;
+    --ink-soft: #4d6273;
+    --rule: #c9d5de;
+    --accent: #0b6e8a;      /* 海水藍：互動元件 */
+    --warn: #c4471d;        /* 警示橘：目前時間、示範資料提醒 */
+    --shadow: 0 6px 24px rgba(10, 30, 45, .25);
+    --sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+    --num: "Barlow Semi Condensed", "Arial Narrow", var(--sans);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --panel: rgba(15, 37, 53, .92);
+      --panel-solid: #0f2535;
+      --ink: #e4edf2;
+      --ink-soft: #9db2c0;
+      --rule: #2a4558;
+      --accent: #5cc4dd;
+      --warn: #ff9a6b;
+      --shadow: 0 6px 24px rgba(0, 0, 0, .45);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --panel: rgba(15, 37, 53, .92); --panel-solid: #0f2535; --ink: #e4edf2; --ink-soft: #9db2c0;
+    --rule: #2a4558; --accent: #5cc4dd; --warn: #ff9a6b; --shadow: 0 6px 24px rgba(0,0,0,.45); color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: #0e2232; font-family: var(--sans); color: var(--ink); font-size: 15px; }
+  #map { position: fixed; inset: 0; background: #0e2232; }
+
+  /* 左側控制面板 */
+  .panel {
+    position: fixed; z-index: 1000;
+    top: calc(12px + env(safe-area-inset-top, 0px)); left: 12px;
+    width: 300px; max-height: calc(100% - 120px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto; background: var(--panel); backdrop-filter: blur(8px);
+    border-radius: 10px; box-shadow: var(--shadow); padding: 16px 16px 8px;
+  }
+  .panel h1 { font-size: 19px; font-weight: 700; margin: 0 0 2px; letter-spacing: .02em; }
+  .updated { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 12px; }
+  .group { border-top: 1px solid var(--rule); padding: 12px 0; }
+  .group h2 { font-size: 14px; font-weight: 700; margin: 0 0 8px; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 14px; cursor: pointer; }
+  .row input { accent-color: var(--accent); margin: 0; width: 16px; height: 16px; }
+  .note { font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; margin: 6px 0 0; }
+  .note.warn { color: var(--warn); }
+  .seg { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--rule); border-radius: 7px; overflow: hidden; }
+  .seg button {
+    font: inherit; font-size: 13px; padding: 6px 0; border: 0; background: transparent; color: var(--ink); cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--rule); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--panel-solid); font-weight: 500; }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  label.slider { display: block; font-size: 12.5px; color: var(--ink-soft); margin-top: 8px; }
+
+  .storm-name { font-weight: 700; font-size: 14.5px; margin: 4px 0 6px; }
+  .cat { font-size: 12.5px; color: var(--ink-soft); margin: 8px 0 2px; }
+  .swatch { width: 22px; height: 0; border-top: 3px solid; flex: none; }
+  .swatch.nwp { border-top-style: dashed; }
+  .swatch.ai { border-top-style: dotted; border-top-width: 4px; }
+  .model-code { margin-left: auto; font-family: var(--num); color: var(--ink-soft); font-size: 13px; }
+  .intensity { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 6px; }
+  .intensity span { font-size: 11px; text-align: center; padding: 2px 0; border-radius: 3px; color: #10202c; }
+
+  .toggle-panel { display: none; }
+
+  /* 底部時間列：整個網站最醒目的元素 */
+  .timebar {
+    position: fixed; z-index: 1000; left: 324px; right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    background: var(--panel); backdrop-filter: blur(8px); border-radius: 10px; box-shadow: var(--shadow);
+    display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 14px; padding: 10px 16px;
+  }
+  .play {
+    width: 40px; height: 40px; border-radius: 50%; border: 0; background: var(--accent); color: var(--panel-solid);
+    font-size: 15px; cursor: pointer;
+  }
+  .clock { font-family: var(--num); line-height: 1.05; min-width: 150px; }
+  .clock .utc { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .clock .local { font-size: 13px; color: var(--ink-soft); font-family: var(--sans); }
+  .timebar input { margin: 0; }
+
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+
+  .leaflet-tooltip.tc-tip {
+    font-family: var(--sans); font-size: 12.5px; background: var(--panel-solid); color: var(--ink);
+    border: 1px solid var(--rule); box-shadow: var(--shadow);
+  }
+  .tau-label { font-family: var(--num); font-size: 12px; font-weight: 600; color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000; white-space: nowrap; }
+  .leaflet-control-attribution { font-size: 10.5px; }
+
+  @media (max-width: 720px) {
+    .panel { top: auto; left: 0; right: 0; width: auto; bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+             max-height: 55%; border-radius: 12px 12px 0 0; transform: translateY(calc(100% + 80px)); transition: transform .25s; }
+    .panel.open { transform: none; }
+    .toggle-panel {
+      display: block; position: fixed; z-index: 1001; top: calc(12px + env(safe-area-inset-top, 0px)); right: 12px;
+      font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 8px; border: 0;
+      background: var(--panel-solid); color: var(--ink); box-shadow: var(--shadow);
+    }
+    .timebar { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom, 0px)); gap: 10px; padding: 8px 12px; }
+    .clock { min-width: 118px; } .clock .utc { font-size: 21px; }
+    .leaflet-control-zoom { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .panel { transition: none; } }
+</style>
+</head>
+<body>
+<div id="map" aria-label="地圖"></div>
+
+<button class="toggle-panel" id="togglePanel" aria-expanded="false" aria-controls="panel">圖層</button>
+
+<aside class="panel" id="panel">
+  <h1>熱帶氣旋觀測站</h1>
+  <p class="updated" id="updated">讀取資料中…</p>
+
+  <section class="group">
+    <h2>衛星雲圖</h2>
+    <div class="seg" role="group" aria-label="衛星頻道">
+      <button data-sat="ir" aria-pressed="true">紅外線</button>
+      <button data-sat="airmass" aria-pressed="false">空氣團</button>
+      <button data-sat="vis" aria-pressed="false">可見光</button>
+      <button data-sat="off" aria-pressed="false">關閉</button>
+    </div>
+    <label class="slider">透明度<input type="range" id="satOpacity" min="0.2" max="1" step="0.05" value="0.85"></label>
+    <p class="note">GOES 東／西與向日葵衛星，NASA GIBS 提供。印度洋與非洲上空目前沒有涵蓋。</p>
+  </section>
+
+  <section class="group">
+    <h2>疊加圖層</h2>
+    <label class="row"><input type="checkbox" id="radarToggle"> 雷達回波（RainViewer）</label>
+    <label class="row"><input type="checkbox" id="sstToggle"> 海溫（GHRSST MUR，前一日）</label>
+    <label class="row"><input type="checkbox" id="windToggle"> 地面風場（GFS 10 公尺）</label>
+    <p class="note" id="windNote"></p>
+  </section>
+
+  <section class="group" id="trackGroup">
+    <h2>路徑預報</h2>
+    <div id="storms"><p class="note">讀取中…</p></div>
+    <div class="cat">最佳路徑強度（節）</div>
+    <div class="intensity" id="intensityLegend"></div>
+  </section>
+</aside>
+
+<div class="timebar" role="group" aria-label="衛星時間">
+  <button class="play" id="play" aria-label="播放動畫">▶</button>
+  <div class="clock"><div class="utc" id="clockUtc">--</div><div class="local" id="clockLocal"></div></div>
+  <input type="range" id="timeSlider" min="0" max="11" step="1" value="11" aria-label="選擇時間">
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet-velocity@2.1.4/dist/leaflet-velocity.min.js"></script>
+<script>
+/* ===================== 設定區：想調整的東西大多在這裡 ===================== */
+const CONFIG = {
+  center: [20, 135], zoom: 4,
+  frames: 12,          // 動畫張數
+  stepMin: 20,         // 每張相隔幾分鐘
+  latencyMin: 60,      // GIBS 即時資料大約延遲多久才上線
+  // NASA GIBS 圖層名稱（可到 NASA Worldview 查更多）
+  sat: {
+    ir:      { level: 6, layers: ["GOES-West_ABI_Band13_Clean_Infrared", "GOES-East_ABI_Band13_Clean_Infrared", "Himawari_AHI_Band13_Clean_Infrared"] },
+    airmass: { level: 6, layers: ["GOES-West_ABI_Air_Mass", "GOES-East_ABI_Air_Mass", "Himawari_AHI_Air_Mass"] },
+    vis:     { level: 7, layers: ["GOES-West_ABI_Band2_Red_Visible_1km", "GOES-East_ABI_Band2_Red_Visible_1km", "Himawari_AHI_Band3_Red_Visible_1km"] },
+  },
+  sstLayer: "GHRSST_L4_MUR_Sea_Surface_Temperature",
+  // 路徑顏色：官方用白色實線，數值模式用冷色虛線，AI 模式用暖色點線
+  palette: {
+    official: ["#ffffff", "#ffe066"],
+    nwp: ["#4cc9f0", "#4895ef", "#80ed99", "#56cfe1", "#a0c4ff", "#72efdd", "#b8f2e6"],
+    ai: ["#ff70a6", "#ff9770", "#ffd670", "#e980fc"],
+  },
+};
+/* ======================================================================== */
+
+const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
+const map = L.map("map", { worldCopyJump: true, minZoom: 2, maxZoom: 9, zoomControl: false })
+  .setView(CONFIG.center, CONFIG.zoom);
+L.control.zoom({ position: "topright" }).addTo(map);
+
+// 底圖（CARTO 深色）與上層的地名標籤
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png", {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>',
+  subdomains: "abcd",
+}).addTo(map);
+map.createPane("labels").style.zIndex = 450;
+map.getPane("labels").style.pointerEvents = "none";
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png", { pane: "labels", subdomains: "abcd" }).addTo(map);
+
+/* ---------- 時間軸 ---------- */
+function latestTime() {
+  const t = new Date(Date.now() - CONFIG.latencyMin * 60000);
+  t.setUTCSeconds(0, 0);
+  t.setUTCMinutes(t.getUTCMinutes() - (t.getUTCMinutes() % 10));
+  return t;
+}
+const t0 = latestTime();
+const times = Array.from({ length: CONFIG.frames }, (_, i) =>
+  new Date(t0.getTime() - (CONFIG.frames - 1 - i) * CONFIG.stepMin * 60000));
+const gibsTime = d => d.toISOString().slice(0, 19) + "Z";
+let frame = CONFIG.frames - 1;
+
+const slider = document.getElementById("timeSlider");
+slider.max = CONFIG.frames - 1; slider.value = frame;
+
+function showClock() {
+  const d = times[frame];
+  document.getElementById("clockUtc").textContent =
+    `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")} ${d.toISOString().slice(11, 16)} UTC`;
+  document.getElementById("clockLocal").textContent =
+    "本地 " + d.toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+/* ---------- 衛星雲圖：每個時間一組圖層，預先載入，切換時只改透明度 ---------- */
+let satMode = "ir", satFrames = [], satOpacity = 0.85;
+map.createPane("sat").style.zIndex = 250;
+
+function buildSat() {
+  satFrames.forEach(g => map.removeLayer(g));
+  satFrames = [];
+  if (satMode === "off") return;
+  const { level, layers } = CONFIG.sat[satMode];
+  satFrames = times.map((d, i) => L.layerGroup(layers.map(name =>
+    L.tileLayer(`${GIBS}/${name}/default/${gibsTime(d)}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
+      pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: i === frame ? satOpacity : 0, bounds: [[-85, -180], [85, 180]],
+    }))).addTo(map));
+}
+function showSatFrame() {
+  satFrames.forEach((g, i) => g.eachLayer(l => l.setOpacity(i === frame ? satOpacity : 0)));
+}
+
+document.querySelectorAll("[data-sat]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-sat]").forEach(x => x.setAttribute("aria-pressed", x === b));
+  satMode = b.dataset.sat; buildSat();
+}));
+document.getElementById("satOpacity").addEventListener("input", e => { satOpacity = +e.target.value; showSatFrame(); });
+
+/* ---------- 雷達（RainViewer 免費版：最高縮放 7、僅過去資料、個人／教育用途） ---------- */
+let radarFrames = [], radarLayer = null;
+map.createPane("radar").style.zIndex = 300;
+async function loadRadar() {
+  const r = await fetch("https://api.rainviewer.com/public/weather-maps.json").then(r => r.json());
+  radarFrames = r.radar.past.map(p => ({ time: p.time * 1000, url: `${r.host}${p.path}/256/{z}/{x}/{y}/2/1_1.png` }));
+}
+async function showRadar() {
+  const on = document.getElementById("radarToggle").checked;
+  if (radarLayer) { map.removeLayer(radarLayer); radarLayer = null; }
+  if (!on) return;
+  if (!radarFrames.length) { try { await loadRadar(); } catch { return; } }
+  // 找最接近目前滑桿時間的雷達圖（雷達只保留約 2 小時）
+  const target = times[frame].getTime();
+  const f = radarFrames.reduce((a, b) => Math.abs(b.time - target) < Math.abs(a.time - target) ? b : a);
+  radarLayer = L.tileLayer(f.url, { pane: "radar", maxNativeZoom: 7, maxZoom: 9, opacity: .8,
+    attribution: '雷達：<a href="https://www.rainviewer.com/">RainViewer</a>' }).addTo(map);
+}
+document.getElementById("radarToggle").addEventListener("change", showRadar);
+
+/* ---------- 海溫 ---------- */
+let sstLayer = null;
+map.createPane("sst").style.zIndex = 240;
+document.getElementById("sstToggle").addEventListener("change", e => {
+  if (sstLayer) { map.removeLayer(sstLayer); sstLayer = null; }
+  if (!e.target.checked) return;
+  const day = new Date(Date.now() - 36 * 3600000).toISOString().slice(0, 10);
+  sstLayer = L.tileLayer(`${GIBS}/${CONFIG.sstLayer}/default/${day}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png`,
+    { pane: "sst", maxNativeZoom: 7, maxZoom: 9, opacity: .75 }).addTo(map);
+});
+
+/* ---------- 風場 ---------- */
+let windLayer = null, windData = null;
+const windNote = document.getElementById("windNote");
+document.getElementById("windToggle").addEventListener("change", async e => {
+  if (windLayer) { map.removeLayer(windLayer); windLayer = null; }
+  if (!e.target.checked) { windNote.textContent = ""; return; }
+  try {
+    windData = windData || await fetch("data/wind.json", { cache: "no-cache" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+  } catch {
+    windNote.textContent = "還沒有風場資料。GitHub Actions 第一次執行完成後就會出現。";
+    e.target.checked = false; return;
+  }
+  const ref = new Date(windData[0].header.refTime);
+  windNote.textContent = `GFS ${ref.toISOString().slice(5, 13).replace("T", " ")}Z 起報的分析場`;
+  windLayer = L.velocityLayer({
+    data: windData, maxVelocity: 30, velocityScale: 0.008, lineWidth: 1.3,
+    displayValues: true, displayOptions: { velocityType: "10 公尺風", position: "bottomright", emptyString: "無資料", speedUnit: "kt" },
+  }).addTo(map);
+});
+
+/* ---------- 路徑預報 ---------- */
+const KT_SCALE = [ // [下限, 顏色, 標籤]，參考薩菲爾－辛普森等級
+  [0, "#7fb3d5", "<34"], [34, "#7ee0a1", "34"], [64, "#ffe066", "64"],
+  [83, "#ffb347", "83"], [96, "#ff6b6b", "96"], [113, "#d65db1", "113+"],
+];
+const ktColor = kt => (KT_SCALE.filter(s => (kt ?? 0) >= s[0]).pop() || KT_SCALE[0])[1];
+document.getElementById("intensityLegend").innerHTML =
+  KT_SCALE.map(([, c, t]) => `<span style="background:${c}">${t}</span>`).join("");
+
+// 讓跨越國際換日線的路徑連續，不會繞地球一圈
+function unwrap(pts) {
+  let prev = null;
+  return pts.map(p => {
+    let lon = p.lon;
+    if (prev !== null) { while (lon - prev > 180) lon -= 360; while (prev - lon > 180) lon += 360; }
+    prev = lon; return [p.lat, lon];
+  });
+}
+const fmtTime = iso => {
+  const d = new Date(iso);
+  return `${d.toISOString().slice(5, 16).replace("T", " ")} UTC（本地 ${d.toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}）`;
+};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+map.createPane("tracks").style.zIndex = 500;
+const trackLayers = {};  // key -> layerGroup
+
+function drawForecast(f, color) {
+  const g = L.layerGroup();
+  const ll = unwrap(f.points);
+  const style = { official: { weight: 3.5, dashArray: null }, nwp: { weight: 2, dashArray: "7 5" }, ai: { weight: 2.5, dashArray: "1 6", lineCap: "round" } }[f.category];
+  L.polyline(ll, { pane: "tracks", color, opacity: .95, ...style }).addTo(g);
+  f.points.forEach((p, i) => {
+    const valid = new Date(new Date(f.init).getTime() + p.tau * 3600000).toISOString();
+    const m = L.circleMarker(ll[i], { pane: "tracks", radius: f.category === "official" ? 4 : 2.5, color, fillColor: color, fillOpacity: 1, weight: 1 })
+      .bindTooltip(`<b>${esc(f.label)}</b>　+${p.tau} 小時<br>${fmtTime(valid)}${p.vmax ? `<br>最大風速 ${p.vmax} 節` : ""}${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" });
+    m.addTo(g);
+    if (f.category === "official" && p.tau > 0 && p.tau % 24 === 0) {
+      L.marker(ll[i], { pane: "tracks", interactive: false, icon: L.divIcon({ className: "tau-label", html: `${p.tau}h`, iconAnchor: [-6, 8] }) }).addTo(g);
+    }
+  });
+  return g;
+}
+
+function drawBest(storm) {
+  const g = L.layerGroup();
+  const ll = unwrap(storm.best);
+  L.polyline(ll, { pane: "tracks", color: "#ffffff", weight: 1.5, opacity: .7 }).addTo(g);
+  storm.best.forEach((p, i) => L.circleMarker(ll[i], { pane: "tracks", radius: 5, color: "#10202c", weight: 1, fillColor: ktColor(p.vmax), fillOpacity: 1 })
+    .bindTooltip(`<b>${esc(storm.name)}</b><br>${fmtTime(p.time)}<br>最大風速 ${p.vmax ?? "—"} 節${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" })
+    .addTo(g));
+  return g;
+}
+
+async function loadTracks() {
+  const box = document.getElementById("storms");
+  let data;
+  try { data = await fetch("data/tracks.json", { cache: "no-cache" }).then(r => r.json()); }
+  catch { box.innerHTML = '<p class="note">讀不到 data/tracks.json。用本機直接開檔時瀏覽器會擋，請用 GitHub Pages 或本機伺服器開啟。</p>'; return; }
+
+  document.getElementById("updated").textContent = "資料更新：" + fmtTime(data.updated);
+  if (!data.storms.length) { box.innerHTML = '<p class="note">目前沒有活躍的熱帶氣旋。</p>'; return; }
+
+  box.innerHTML = "";
+  const CAT_NAME = { official: "官方預報", nwp: "數值模式", ai: "AI 模式" };
+  data.storms.forEach(storm => {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `<div class="storm-name">${esc(storm.name)}</div>` + (storm.demo ? '<p class="note warn">這是虛構的示範路徑，接上真實資料來源後會自動替換。</p>' : "");
+    const bestKey = storm.id + ":best";
+    trackLayers[bestKey] = drawBest(storm).addTo(map);
+    wrap.insertAdjacentHTML("beforeend", `<label class="row"><input type="checkbox" checked data-key="${bestKey}"> 實測路徑</label>`);
+
+    ["official", "nwp", "ai"].forEach(cat => {
+      const list = storm.forecasts.filter(f => f.category === cat);
+      if (!list.length) return;
+      wrap.insertAdjacentHTML("beforeend", `<div class="cat">${CAT_NAME[cat]}</div>`);
+      list.forEach((f, i) => {
+        const color = CONFIG.palette[cat][i % CONFIG.palette[cat].length];
+        const key = `${storm.id}:${f.model}`;
+        trackLayers[key] = drawForecast(f, color).addTo(map);
+        wrap.insertAdjacentHTML("beforeend",
+          `<label class="row"><input type="checkbox" checked data-key="${key}"><span class="swatch ${cat}" style="border-top-color:${color}"></span>${esc(f.label)}<span class="model-code">${esc(f.model)}</span></label>`);
+      });
+    });
+    box.appendChild(wrap);
+
+  });
+  // 把畫面移到所有颱風路徑的範圍
+  const all = L.featureGroup(Object.values(trackLayers).flatMap(g => g.getLayers()));
+  if (all.getLayers().length) map.fitBounds(all.getBounds(), { paddingTopLeft: [innerWidth > 720 ? 330 : 20, 20], paddingBottomRight: [20, 90] });
+  box.addEventListener("change", e => {
+    const l = trackLayers[e.target.dataset.key];
+    if (l) e.target.checked ? l.addTo(map) : map.removeLayer(l);
+  });
+}
+
+/* ---------- 播放控制 ---------- */
+function setFrame(i) { frame = i; slider.value = i; showClock(); showSatFrame(); if (radarLayer) showRadar(); }
+slider.addEventListener("input", e => setFrame(+e.target.value));
+let timer = null;
+const playBtn = document.getElementById("play");
+playBtn.addEventListener("click", () => {
+  if (timer) { clearInterval(timer); timer = null; playBtn.textContent = "▶"; playBtn.setAttribute("aria-label", "播放動畫"); return; }
+  playBtn.textContent = "❚❚"; playBtn.setAttribute("aria-label", "暫停動畫");
+  timer = setInterval(() => setFrame((frame + 1) % CONFIG.frames), 700);
+});
+
+/* ---------- 手機版面板開關 ---------- */
+const panel = document.getElementById("panel"), tp = document.getElementById("togglePanel");
+tp.addEventListener("click", () => { const o = panel.classList.toggle("open"); tp.setAttribute("aria-expanded", o); tp.textContent = o ? "收起" : "圖層"; });
+
+showClock(); buildSat(); loadTracks();
+</script>
+</body>
+</html>
