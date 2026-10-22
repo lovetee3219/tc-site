@@ -30,15 +30,10 @@ OUT = Path(__file__).resolve().parent.parent / "data" / "tracks.json"
 #   其他海域（西北太平洋 wp、北印度洋 io、南半球 sh）可找研究單位的公開鏡像，
 #   例如 UCAR/NCAR RAL 的熱帶氣旋導引資料，網址請到其網站確認。
 SOURCES = [
-    {"storm": "WP292026", "name": "薔琵",
-     "adeck": "https://hurricanes.ral.ucar.edu/repository/data/adecks_open/awp292026.dat",
-     "bdeck": "https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/bwp292026.dat"},
-]
-#SOURCES = [
     # {"storm": "AL092026", "name": "颶風範例",
     #  "adeck": "https://ftp.nhc.noaa.gov/atcf/aid_public/aal092026.dat.gz",
     #  "bdeck": "https://ftp.nhc.noaa.gov/atcf/btk/bal092026.dat"},
-#]
+]
 
 # ── 模式代碼 → 顯示名稱與分類 ──────────────────────────────────
 # category: official（官方）、nwp（數值模式）、ai（AI 模式）
@@ -46,9 +41,6 @@ SOURCES = [
 MODELS = {
     "OFCL": ("NHC 官方", "official"),
     "JTWC": ("JTWC 官方", "official"),
-    "RJTD": ("JMA 官方", "official"),
-    "RCTP": ("CWA 官方", "official"),
-    "VHHH": ("香港天文台", "official"),
     "AVNO": ("GFS", "nwp"),
     "AVNI": ("GFS（插值）", "nwp"),
     "EMX":  ("ECMWF IFS", "nwp"),
@@ -119,18 +111,30 @@ def iso(yyyymmddhh: str) -> str:
 
 
 def build_storm(src):
+    """a-deck 與 b-deck 分開處理：其中一個抓不到，另一個仍會顯示。"""
     storm = {"id": src["storm"], "name": src.get("name", src["storm"]), "best": [], "forecasts": []}
     if src.get("bdeck"):
-        b = parse_atcf(fetch_text(src["bdeck"]))
-        pts = sorted(((init, p[0]) for (_, init), p in b.items() if p), key=lambda x: x[0])
-        storm["best"] = [{**p, "time": iso(init)} for init, p in pts]
+        try:
+            b = parse_atcf(fetch_text(src["bdeck"]))
+            pts = sorted(((init, p[0]) for (_, init), p in b.items() if p), key=lambda x: x[0])
+            storm["best"] = [{**p, "time": iso(init)} for init, p in pts]
+            print(f"  b-deck：{len(storm['best'])} 個實測點")
+        except Exception as e:
+            print("  b-deck 失敗：", e)
     if src.get("adeck"):
-        for tech, (init, pts) in latest_runs(parse_atcf(fetch_text(src["adeck"]))).items():
-            if len(pts) < 2:
-                continue
-            label, cat = MODELS[tech]
-            storm["forecasts"].append({"model": tech, "label": label, "category": cat,
-                                       "init": iso(init), "points": pts})
+        try:
+            runs = parse_atcf(fetch_text(src["adeck"]))
+            found = sorted({tech for tech, _ in runs})
+            print("  a-deck 內的模式代碼：", " ".join(found))
+            for tech, (init, pts) in latest_runs(runs).items():
+                if len(pts) < 2:
+                    continue
+                label, cat = MODELS[tech]
+                storm["forecasts"].append({"model": tech, "label": label, "category": cat,
+                                           "init": iso(init), "points": pts})
+            print("  會顯示的預報：", " ".join(f["model"] for f in storm["forecasts"]) or "（無，代碼都不在 MODELS 表內）")
+        except Exception as e:
+            print("  a-deck 失敗：", e)
     return storm
 
 
@@ -168,11 +172,10 @@ def main():
     else:
         storms = []
         for src in SOURCES:
-            try:
-                storms.append(build_storm(src))
-                print("OK", src["storm"])
-            except Exception as e:  # 單一來源失敗不影響其他
-                print("失敗", src["storm"], e)
+            print("處理", src["storm"])
+            storm = build_storm(src)
+            if storm["best"] or storm["forecasts"]:
+                storms.append(storm)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     payload = {"updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "storms": storms}
     OUT.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
