@@ -49,7 +49,7 @@
   .panel {
     position: fixed; z-index: 1000;
     top: calc(12px + env(safe-area-inset-top, 0px)); left: 12px;
-    width: 300px; max-height: calc(100% - 120px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    width: 300px; max-height: calc(100% - 140px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
     overflow-y: auto; background: var(--panel); backdrop-filter: blur(8px);
     border-radius: 10px; box-shadow: var(--shadow); padding: 16px 16px 8px;
   }
@@ -100,11 +100,16 @@
   /* 底部時間列：整個網站最醒目的元素 */
   /* 左下角：滑鼠所在位置的經緯度，與底部時間列等高對齊 */
   .coords {
-    position: fixed; z-index: 1000; left: 12px; width: 300px; height: 60px;
+    position: fixed; z-index: 1000; left: 12px; width: 300px; min-height: 60px;
     bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     background: var(--panel); backdrop-filter: blur(8px); border-radius: 10px; box-shadow: var(--shadow);
-    display: flex; align-items: center; gap: 14px; padding: 0 16px;
+    display: flex; align-items: center; gap: 14px; padding: 8px 16px;
   }
+  .coords .vals { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .coords .sub { font-size: 13.5px; color: var(--ink); white-space: nowrap; }
+  .coords .sub b { font-family: var(--num); font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .coords .sub .k { color: var(--ink-soft); margin-right: 4px; }
+  .coords .sub .sep { color: var(--rule); margin: 0 8px; }
   .coords .lbl { font-size: 12.5px; color: var(--ink-soft); line-height: 1.3; }
   .coords .val { font-family: var(--num); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .01em; white-space: nowrap; }
   .coords .val.idle { color: var(--ink-soft); font-weight: 500; font-family: var(--sans); font-size: 15px; }
@@ -133,7 +138,7 @@
   .leaflet-control-attribution { font-size: 10.5px; }
 
   @media (max-width: 720px) {
-    .coords { top: calc(12px + env(safe-area-inset-top, 0px)); bottom: auto; left: 8px; width: auto; height: 38px; padding: 0 12px; gap: 8px; }
+    .coords { top: calc(12px + env(safe-area-inset-top, 0px)); bottom: auto; left: 8px; width: auto; min-height: 38px; padding: 4px 12px; gap: 8px; }
     .coords .val { font-size: 16px; }
     .panel { top: auto; left: 0; right: 0; width: auto; bottom: calc(76px + env(safe-area-inset-bottom, 0px));
              max-height: 55%; border-radius: 12px 12px 0 0; transform: translateY(calc(100% + 80px)); transition: transform .25s; }
@@ -200,7 +205,10 @@
 
 <div class="coords">
   <span class="lbl">游標<br>位置</span>
-  <span class="val idle" id="coordVal">移到地圖上</span>
+  <span class="vals">
+    <span class="val idle" id="coordVal">移到地圖上</span>
+    <span class="sub" id="coordSub" hidden></span>
+  </span>
 </div>
 
 <div class="timebar" role="group" aria-label="衛星時間">
@@ -506,7 +514,7 @@ document.querySelectorAll("[data-src]").forEach(b => b.addEventListener("click",
 applySource();
 
 /* ---------- 雷達（RainViewer 免費版：最高縮放 7、僅過去資料、個人／教育用途） ---------- */
-let radarFrames = [], radarLayer = null;
+let radarFrames = [], radarLayer = null, radarUrl = null;
 map.createPane("radar").style.zIndex = 300;
 async function loadRadar() {
   const r = await fetch("https://api.rainviewer.com/public/weather-maps.json").then(r => r.json());
@@ -520,19 +528,21 @@ async function showRadar() {
   // 找最接近目前滑桿時間的雷達圖（雷達只保留約 2 小時）
   const target = times[frame].getTime();
   const f = radarFrames.reduce((a, b) => Math.abs(b.time - target) < Math.abs(a.time - target) ? b : a);
+  radarUrl = f.url;
   radarLayer = L.tileLayer(f.url, { pane: "radar", maxNativeZoom: 7, maxZoom: 9, opacity: .8,
     attribution: '雷達：<a href="https://www.rainviewer.com/">RainViewer</a>' }).addTo(map);
 }
 document.getElementById("radarToggle").addEventListener("change", showRadar);
 
 /* ---------- 海溫 ---------- */
-let sstLayer = null;
+let sstLayer = null, sstUrl = null;
 map.createPane("sst").style.zIndex = 240;
 document.getElementById("sstToggle").addEventListener("change", e => {
   if (sstLayer) { map.removeLayer(sstLayer); sstLayer = null; }
   if (!e.target.checked) return;
   const day = new Date(Date.now() - 36 * 3600000).toISOString().slice(0, 10);
-  sstLayer = L.tileLayer(`${GIBS}/${CONFIG.sstLayer}/default/${day}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png`,
+  sstUrl = `${GIBS}/${CONFIG.sstLayer}/default/${day}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png`;
+  sstLayer = L.tileLayer(sstUrl,
     { pane: "sst", maxNativeZoom: 7, maxZoom: 9, opacity: .75 }).addTo(map);
 });
 
@@ -736,9 +746,97 @@ function showCoords(ll) {
   coordVal.textContent = `${f(lat, "N", "S")}  ${f(lon, "E", "W")}`;
   coordVal.classList.remove("idle");
 }
-map.on("mousemove", e => showCoords(e.latlng));
-map.on("click", e => showCoords(e.latlng));   // 手機沒有滑鼠，點一下地圖也會顯示
-map.on("mouseout", () => { coordVal.textContent = "移到地圖上"; coordVal.classList.add("idle"); });
+
+/* ---------- 游標處的雷達回波與海溫：讀取圖磚上該點的顏色，再對照色表換回數值 ---------- */
+// 海溫色表：NASA GIBS「GHRSST_Sea_Surface_Temperature」，第 0 格 <0°C，之後每格 0.15°C，最後一格 ≥32°C
+const SST_RGB = "43,0,26;45,0,28;48,0,31;51,0,34;53,0,36;56,0,39;59,0,43;63,1,46;66,1,50;69,1,53;72,1,57;75,2,61;78,2,65;81,2,69;85,2,73;88,2,77;91,3,81;95,3,85;98,3,89;101,3,93;105,4,97;108,4,102;112,5,106;115,5,110;118,6,113;120,6,115;121,6,117;122,6,119;121,6,119;120,7,119;117,7,117;114,7,116;111,7,114;107,8,112;103,8,110;98,8,108;94,8,105;90,9,103;86,9,101;81,9,99;77,9,97;73,10,94;69,10,92;65,10,90;61,10,88;57,10,86;53,11,84;48,11,81;44,11,79;40,11,77;37,12,76;34,13,75;32,14,75;30,16,77;30,18,78;30,20,81;30,22,84;30,24,87;30,26,90;31,28,93;30,30,96;30,33,99;31,35,102;31,37,105;31,39,108;31,42,112;31,44,115;31,46,118;31,48,121;31,50,124;31,53,127;31,55,130;32,57,133;32,59,136;32,61,139;32,64,142;32,66,145;32,68,148;32,70,151;33,73,155;33,75,158;33,78,161;33,81,164;34,84,167;34,87,170;35,90,173;35,93,176;36,96,179;36,100,182;37,103,185;37,106,187;38,110,190;38,113,194;39,117,197;40,120,200;40,123,203;41,127,206;41,130,209;42,133,212;42,136,215;42,139,218;43,142,221;43,146,224;44,149,227;44,152,230;45,156,233;46,159,236;46,163,239;47,166,242;48,170,245;48,172,244;47,173,240;46,174,232;45,174,222;43,173,208;41,171,191;39,168,171;37,166,152;35,164,133;32,163,113;30,163,93;27,165,72;25,167,53;26,170,37;28,175,23;32,179,13;38,183,6;45,187,1;55,190,0;66,194,0;76,197,0;87,201,0;98,204,0;109,207,0;120,211,0;131,215,0;142,218,0;153,222,0;165,225,0;176,229,0;187,232,0;197,236,0;208,239,0;219,243,0;229,246,0;237,247,0;243,247,0;248,245,0;252,243,0;254,239,0;255,234,0;255,228,0;255,223,0;255,217,0;255,212,0;255,206,0;255,201,0;255,196,0;255,191,0;255,185,0;255,180,0;255,175,0;255,170,0;255,164,0;255,159,0;255,153,0;255,148,0;255,142,0;255,137,0;255,131,0;254,126,0;253,122,0;252,117,0;251,113,0;250,109,0;248,106,0;246,102,0;244,98,0;242,95,0;240,91,0;238,87,0;236,83,0;234,80,0;232,76,0;230,73,0;228,69,0;226,66,0;224,62,0;222,59,0;220,55,0;218,51,0;216,48,0;213,45,0;210,42,0;206,39,0;202,37,0;197,34,0;192,32,0;187,31,0;181,29,0;176,27,0;171,25,0;166,23,0;161,21,0;156,20,0;151,18,0;145,16,0;140,14,0;135,12,0;130,10,0;124,8,0;120,7,0;115,5,0;110,3,0;107,2,0".split(";").map(t => t.split(",").map(Number));
+const SST_KEY = new Map(SST_RGB.map((c, i) => [c.join(","), i]));
+// 雷達色表：RainViewer「Universal Blue」，從 -10 dBZ 起每格 1 dBZ（RGBA）
+const hex4 = h => [0, 2, 4, 6].map(i => parseInt(h.slice(i, i + 2), 16));
+const RADAR_PAL = [
+  ..."63615914 66635a19 69665c1e 6c685d24 6f6b5f29 726e612e 75706234 78736439 7c75653e 7f786744 827b6949 857d6a4e 88806c54 8b826d59 8e856f5e 92887164 9e93756e aa9e7978 b6a97e82 c2b4828c cec08796 d2c48ba0 d6c88faa dacc93b4 ded097be 88ddeeff 6cd1ebff 51c5e8ff 36bae5ff 1baee2ff 00a3e0ff 009ad5ff 0091caff 0088bfff 007fb4ff 0077aaff 0070a3ff 00699cff 006295ff 005b8eff 005588ff 005180ff 004e78ff 004a70ff 004768ff ffee00ff ffe000ff ffd200ff ffc500ff ffb700ff ffaa00ff ff9f00ff ff9500ff ff8b00ff ff8100ff ff4400ff f23600ff e62800ff d91b00ff cd0d00ff c10000ff a80000ff 8f0000ff 760000ff 5d0000ff ffaaffff ff9fffff ff95ffff ff8bffff ff81ffff ff77ffff ff6cffff ff62ffff ff58ffff ff4effff ffffffff".split(" ").map((h, i) => [...hex4(h), i - 10, false]),
+  ..."cfffff00 ceffff0c cdffff19 ccffff26 cbffff33 cbffff3f caffff4c c9ffff59 c8ffff66 c7ffff72 c7ffff7f c6ffff8c c5ffff99 c4ffffa5 c3ffffb2 c3ffffbf c2ffffcc c1ffffd8 c0ffffe5 bffffff2 bfffffff b8f8ffff b2f2ffff abebffff a5e5ffff 9fdfffff 98d8ffff 92d2ffff 8bcbffff 85c5ffff 7fbfffff 78b8ffff 72b2ffff 6babffff 65a5ffff 5f9fffff 5b9bffff 5898ffff 5595ffff 5292ffff 4f8fffff 4b8bffff 4888ffff 4585ffff 4282ffff 3f7fffff 3b7bffff 3878ffff 3575ffff 3272ffff 2f6fffff 2b6bffff 2868ffff 2565ffff 2262ffff 1f5fffff 1b5bffff 1858ffff 1555ffff 1252ffff 0f4fffff 0c4bffff 0948ffff 0645ffff 0242ffff 003fffff 003bffff 0038ffff 0035ffff 0032ffff 002fffff 002bffff 0028ffff 0025ffff 0022ffff 001fffff 001bffff 0018ffff 0015ffff 0012ffff 000fffff 000cffff 0009ffff 0006ffff 0002ffff 0000ffff".split(" ").map((h, i) => [...hex4(h), i - 10, true]),
+];
+const nearest = (pal, r, g, b, a) => {
+  let best = null, bd = Infinity;
+  for (const c of pal) {
+    const d = (c[0] - r) ** 2 + (c[1] - g) ** 2 + (c[2] - b) ** 2 + (a === undefined ? 0 : 0.5 * (c[3] - a) ** 2);
+    if (d < bd) { bd = d; best = c; }
+  }
+  return best;
+};
+
+// 下載並快取單一張圖磚的像素（與畫面上顯示的圖層分開，讀不到也不影響顯示）
+const tileCache = new Map();
+function tilePixels(url) {
+  if (!tileCache.has(url)) {
+    tileCache.set(url, fetch(url)
+      .then(r => r.ok ? r.blob() : Promise.reject("empty"))
+      .then(b => createImageBitmap(b))
+      .then(bmp => {
+        const c = document.createElement("canvas");
+        c.width = bmp.width; c.height = bmp.height;
+        const g = c.getContext("2d", { willReadFrequently: true });
+        g.drawImage(bmp, 0, 0);
+        return g.getImageData(0, 0, c.width, c.height);
+      })
+      .catch(e => e === "empty" ? "empty" : "blocked"));
+    if (tileCache.size > 80) tileCache.delete(tileCache.keys().next().value);
+  }
+  return tileCache.get(url);
+}
+async function samplePixel(template, maxZ, ll) {
+  const z = Math.max(0, Math.min(Math.round(map.getZoom()), maxZ)), n = 2 ** z;
+  const p = map.project(ll, z);
+  const ty = Math.floor(p.y / 256);
+  if (ty < 0 || ty >= n) return "empty";
+  let tx = Math.floor(p.x / 256);
+  const fx = (p.x - tx * 256) / 256, fy = (p.y - ty * 256) / 256;
+  tx = ((tx % n) + n) % n;
+  const img = await tilePixels(L.Util.template(template, { z, x: tx, y: ty }));
+  if (typeof img === "string") return img;
+  const px = Math.min(img.width - 1, Math.floor(fx * img.width)), py = Math.min(img.height - 1, Math.floor(fy * img.height));
+  const i = (py * img.width + px) * 4;
+  return img.data.slice(i, i + 4);
+}
+function radarText(px) {
+  if (px === "blocked") return "無法讀取";
+  if (px === "empty" || px[3] < 12) return "無回波";
+  const c = nearest(RADAR_PAL, px[0], px[1], px[2], px[3]);
+  return c[4] < 5 ? "<b>&lt;5</b> dBZ" : `<b>${c[4]}</b> dBZ${c[5] ? "（雪）" : ""}`;
+}
+function sstText(px) {
+  if (px === "blocked") return "無法讀取";
+  if (px === "empty" || px[3] < 128) return "陸地或無資料";
+  const key = `${px[0]},${px[1]},${px[2]}`;
+  const i = SST_KEY.has(key) ? SST_KEY.get(key) : SST_RGB.indexOf(nearest(SST_RGB, px[0], px[1], px[2]));
+  if (i === 0) return "<b>&lt;0</b> °C";
+  if (i === SST_RGB.length - 1) return "<b>≥32</b> °C";
+  return `<b>${((i - 1) * 0.15 + 0.075).toFixed(1)}</b> °C`;
+}
+const coordSub = document.getElementById("coordSub");
+let readSeq = 0;
+async function updateReadout(ll) {
+  const my = ++readSeq;
+  const jobs = [];
+  if (radarLayer && radarUrl) jobs.push(samplePixel(radarUrl, 7, ll).then(px => `<span class="k">雷達</span>${radarText(px)}`));
+  if (sstLayer && sstUrl) jobs.push(samplePixel(sstUrl, 7, ll).then(px => `<span class="k">海溫</span>${sstText(px)}`));
+  if (!jobs.length) { coordSub.hidden = true; return; }
+  const parts = await Promise.all(jobs);
+  if (my !== readSeq) return;   // 滑鼠已經移到別處，丟掉過時的結果
+  coordSub.innerHTML = parts.join('<span class="sep">│</span>');
+  coordSub.hidden = false;
+}
+let lastLL = null;
+function onPointer(ll) { lastLL = ll; showCoords(ll); updateReadout(ll); }
+map.on("mousemove", e => onPointer(e.latlng));
+map.on("click", e => onPointer(e.latlng));   // 手機沒有滑鼠，點一下地圖也會顯示
+map.on("mouseout", () => {
+  readSeq++; lastLL = null;
+  coordVal.textContent = "移到地圖上"; coordVal.classList.add("idle"); coordSub.hidden = true;
+});
+// 勾選或取消雷達、海溫，以及切換時間時，立刻更新游標處的數值
+["radarToggle", "sstToggle"].forEach(id => document.getElementById(id).addEventListener("change", () => setTimeout(() => lastLL && updateReadout(lastLL), 300)));
 
 showClock(); buildSat(true); drawGrid(); loadTracks(); refreshLatest();
 </script>
