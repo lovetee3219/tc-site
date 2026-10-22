@@ -182,6 +182,12 @@ const CONFIG = {
     vis:     { level: 7, layers: ["GOES-West_ABI_Band2_Red_Visible_1km", "GOES-East_ABI_Band2_Red_Visible_1km", "Himawari_AHI_Band3_Red_Visible_1km"] },
   },
   sstLayer: "GHRSST_L4_MUR_Sea_Surface_Temperature",
+  // 海陸邊界線：顏色與粗細可自行調整
+  coast: {
+    url: "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_50m_coastline.geojson",
+    color: "#f2d14b",
+    weight: 1,
+  },
   // 路徑顏色：官方用白色實線，數值模式用冷色虛線，AI 模式用暖色點線
   palette: {
     official: ["#ffffff", "#ffe066"],
@@ -196,14 +202,20 @@ const map = L.map("map", { worldCopyJump: true, minZoom: 2, maxZoom: 9, zoomCont
   .setView(CONFIG.center, CONFIG.zoom);
 L.control.zoom({ position: "topright" }).addTo(map);
 
-// 底圖（CARTO 深色）與上層的地名標籤
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png", {
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>',
-  subdomains: "abcd",
-}).addTo(map);
-map.createPane("labels").style.zIndex = 450;
-map.getPane("labels").style.pointerEvents = "none";
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png", { pane: "labels", subdomains: "abcd" }).addTo(map);
+// 只畫海陸邊界線（Natural Earth 1:5000 萬海岸線，公有領域資料）
+map.attributionControl.setPrefix(false).addAttribution(
+  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>');
+map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
+map.getPane("coast").style.pointerEvents = "none";
+fetch(CONFIG.coast.url).then(r => r.json()).then(gj => {
+  const renderer = L.canvas({ pane: "coast" });
+  // 左右各多畫一份，跨越國際換日線時海岸線才不會斷掉
+  [-360, 0, 360].forEach(offset => L.geoJSON(gj, {
+    renderer, interactive: false,
+    style: { color: CONFIG.coast.color, weight: CONFIG.coast.weight, opacity: 0.9 },
+    coordsToLatLng: c => L.latLng(c[1], c[0] + offset),
+  }).addTo(map));
+}).catch(() => console.warn("海岸線載入失敗"));
 
 /* ---------- 時間軸 ---------- */
 function latestTime() {
