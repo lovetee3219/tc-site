@@ -128,7 +128,8 @@
   .chart-close { font: inherit; border: 0; background: transparent; color: var(--ink-soft); font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
   .chart-close:hover { color: var(--ink); background: var(--rule); }
   .chart-wrap { position: relative; flex: 1; min-height: 0; }
-  .chart-wrap .note { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; text-align: center; }
+  .chart-wrap .note { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; text-align: center; pointer-events: none; }
+  .chart-wrap .note:empty { display: none; }
   .timebar {
     position: fixed; z-index: 1000; left: 324px; right: 12px;
     bottom: calc(12px + env(safe-area-inset-bottom, 0px));
@@ -868,8 +869,19 @@ async function openChart(o) {
   chartMsg.textContent = xs.length < 2 ? "資料累積中，目前只有 1 筆。" : "";
   const ink = cssVar("--ink"), soft = cssVar("--ink-soft"), rule = cssVar("--rule");
   const hhmm = v => new Date(v).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+  // 在滑鼠所在的時間點畫一條垂直參考線
+  const crosshair = {
+    id: "crosshair",
+    afterDatasetsDraw(c) {
+      const a = c.tooltip && c.tooltip.getActiveElements && c.tooltip.getActiveElements();
+      if (!a || !a.length) return;
+      const x = a[0].element.x, { top, bottom } = c.chartArea, g = c.ctx;
+      g.save(); g.strokeStyle = soft; g.lineWidth = 1; g.setLineDash([3, 3]);
+      g.beginPath(); g.moveTo(x, top); g.lineTo(x, bottom); g.stroke(); g.restore();
+    },
+  };
   chart = new Chart(document.getElementById("chartCanvas"), {
-    type: "line",
+    type: "line", plugins: [crosshair],
     data: { datasets: [
       { label: "平均風速 (m/s)", data: pts(h.ws), yAxisID: "yw", borderColor: "#4cc9f0", backgroundColor: "#4cc9f0", borderWidth: 2, pointRadius: 1.5, spanGaps: true },
       { label: "瞬間風速 (m/s)", data: pts(h.gust), yAxisID: "yw", borderColor: "#ff9770", backgroundColor: "#ff9770", borderWidth: 1.6, borderDash: [5, 3], pointRadius: 1.5, spanGaps: true },
@@ -880,7 +892,20 @@ async function openChart(o) {
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { labels: { color: ink, boxWidth: 14, boxHeight: 2, font: { size: 12 } } },
-        tooltip: { callbacks: { title: items => new Date(items[0].parsed.x).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) } },
+        // 滑鼠（或手指）移到圖上：顯示那個時間點的三個數值
+        tooltip: {
+          backgroundColor: cssVar("--panel-solid"), titleColor: ink, bodyColor: ink, borderColor: rule, borderWidth: 1,
+          padding: 10, boxPadding: 4, titleFont: { size: 13 }, bodyFont: { size: 13 },
+          callbacks: {
+            title: items => new Date(items[0].parsed.x).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }),
+            label: c => {
+              const name = ["平均風速", "瞬間風速", "氣壓"][c.datasetIndex];
+              const v = c.raw && c.raw.y;
+              if (v === null || v === undefined || Number.isNaN(v)) return `${name}　無資料`;
+              return c.datasetIndex === 2 ? `${name}　${v.toFixed(1)} hPa` : `${name}　${v.toFixed(1)} m/s`;
+            },
+          },
+        },
       },
       scales: {
         x: { type: "linear", min: Date.now() - 24 * 3600000, max: Date.now(),
