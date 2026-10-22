@@ -565,10 +565,12 @@ document.getElementById("radarToggle").addEventListener("change", showRadar);
 /* ---------- 海溫 ---------- */
 let sstLayer = null, sstUrl = null;
 map.createPane("sst").style.zIndex = 240;
+const sstDay = () => new Date(Date.now() - 36 * 3600000).toISOString().slice(0, 10);
+let sstShownDay = null;
 document.getElementById("sstToggle").addEventListener("change", e => {
   if (sstLayer) { map.removeLayer(sstLayer); sstLayer = null; }
   if (!e.target.checked) return;
-  const day = new Date(Date.now() - 36 * 3600000).toISOString().slice(0, 10);
+  const day = sstShownDay = sstDay();
   sstUrl = `${GIBS}/${CONFIG.sstLayer}/default/${day}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png`;
   sstLayer = L.tileLayer(sstUrl,
     { pane: "sst", maxNativeZoom: 7, maxZoom: 9, opacity: .75 }).addTo(map);
@@ -643,14 +645,29 @@ function syncStorm(sid) {
   });
 }
 
+// 第一次載入時把畫面移到颱風範圍；之後自動更新時保留使用者的畫面位置和勾選狀態
+let tracksUpdated = null, tracksFirst = true;
 async function loadTracks() {
   const box = document.getElementById("storms");
   let data;
   try { data = await fetch("data/tracks.json", { cache: "no-cache" }).then(r => r.json()); }
-  catch { box.innerHTML = '<p class="note">讀不到 data/tracks.json。用本機直接開檔時瀏覽器會擋，請用 GitHub Pages 或本機伺服器開啟。</p>'; return; }
+  catch {
+    if (tracksFirst) box.innerHTML = '<p class="note">讀不到 data/tracks.json。用本機直接開檔時瀏覽器會擋，請用 GitHub Pages 或本機伺服器開啟。</p>';
+    return;
+  }
+  if (data.updated === tracksUpdated) return;   // 資料沒有變，不必重畫
+  tracksUpdated = data.updated;
+
+  // 記下目前每個勾選框的狀態，重畫後套回去
+  const prev = {};
+  box.querySelectorAll("[data-key],[data-storm]").forEach(cb => { prev[cb.dataset.key || "S:" + cb.dataset.storm] = cb.checked; });
+  const panelScroll = document.getElementById("panel").scrollTop;
+  Object.values(trackLayers).forEach(l => map.removeLayer(l));
+  Object.keys(trackLayers).forEach(k => delete trackLayers[k]);
+  Object.keys(stormKeys).forEach(k => delete stormKeys[k]);
 
   document.getElementById("updated").textContent = "資料更新：" + fmtTime(data.updated);
-  if (!data.storms.length) { box.innerHTML = '<p class="note">目前沒有活躍的熱帶氣旋。</p>'; return; }
+  if (!data.storms.length) { box.innerHTML = '<p class="note">目前沒有活躍的熱帶氣旋。</p>'; tracksFirst = false; return; }
 
   box.innerHTML = "";
   const CAT_NAME = { official: "官方預報", nwp: "數值模式", ai: "AI 模式" };
@@ -717,15 +734,25 @@ async function loadTracks() {
         `<span class="model-text">${esc(name)}<span class="model-init">${ens[name].length} 條・${fmtInit(init)}</span></span></label>`);
     });
     box.appendChild(wrap);
-    if (on) syncStorm(storm.id);
+    wrap.querySelectorAll("[data-key],[data-storm]").forEach(cb => {
+      const k = cb.dataset.key || "S:" + cb.dataset.storm;
+      if (k in prev) cb.checked = prev[k];
+    });
+    body.hidden = !wrap.querySelector("[data-storm]").checked;
+    syncStorm(storm.id);
   } catch (err) {   // 某個颱風的資料有問題時，顯示錯誤訊息，不影響其他颱風
     console.error(err);
     box.insertAdjacentHTML("beforeend", `<p class="note warn">顯示 ${esc(storm.id)} 時出錯：${esc(err.message)}</p>`);
   } });
-  // 把畫面移到所有颱風路徑的範圍
-  const all = L.featureGroup(Object.values(trackLayers).filter(g => map.hasLayer(g)).flatMap(g => g.getLayers()));
-  if (all.getLayers().length) map.fitBounds(all.getBounds(), { paddingTopLeft: [innerWidth > 720 ? 330 : 20, 20], paddingBottomRight: [20, 90] });
-  box.addEventListener("change", e => {
+  document.getElementById("panel").scrollTop = panelScroll;
+  // 第一次載入：把畫面移到所有颱風路徑的範圍
+  if (tracksFirst) {
+    const all = L.featureGroup(Object.values(trackLayers).filter(g => map.hasLayer(g)).flatMap(g => g.getLayers()));
+    if (all.getLayers().length) map.fitBounds(all.getBounds(), { paddingTopLeft: [innerWidth > 720 ? 330 : 20, 20], paddingBottomRight: [20, 90] });
+  }
+  tracksFirst = false;
+}
+document.getElementById("storms").addEventListener("change", e => {
     const sid = e.target.dataset.storm;
     if (sid !== undefined) {   // 颱風的總開關：收合／展開，並一次開關它所有的路徑
       e.target.closest(".storm").querySelector(".storm-body").hidden = !e.target.checked;
@@ -734,8 +761,7 @@ async function loadTracks() {
     }
     const wrap = e.target.closest(".storm");
     if (wrap) syncStorm(wrap.querySelector("[data-storm]").dataset.storm);
-  });
-}
+});
 
 /* ---------- 播放控制 ---------- */
 function setFrame(i) { frame = i; slider.value = i; showClock(); showSatFrame(); if (radarLayer) showRadar(); }
@@ -829,10 +855,15 @@ async function loadObs() {
     document.getElementById("obsNote").textContent = "還沒有測站資料，等「更新測站」自動執行一次後就會出現。";
   }
   drawObs();
+  // 折線圖開著時，換成這一站的最新資料（滑鼠正停在圖上時先不換，免得數值框突然消失）
+  if (chartStation && !chartbox.hidden && !chartbox.matches(":hover")) {
+    const o = obsData.find(x => x.src === chartStation.src && x.id === chartStation.id);
+    if (o) openChart(o);
+  }
 }
 map.on("moveend", drawObs);
 document.getElementById("obsToggle").addEventListener("change", drawObs);
-setInterval(loadObs, 10 * 60000);   // 每 10 分鐘重新讀一次
+// 測站的自動更新統一放在檔案最後的「自動更新」區塊
 loadObs();
 
 /* ---------- 測站過去 24 小時折線圖（Chart.js 第一次點測站時才載入） ---------- */
@@ -846,9 +877,11 @@ function loadChartJs() {
   });
 }
 const chartbox = document.getElementById("chartbox"), chartMsg = document.getElementById("chartMsg");
-document.getElementById("chartClose").addEventListener("click", () => { chartbox.hidden = true; });
+document.getElementById("chartClose").addEventListener("click", () => { chartbox.hidden = true; chartStation = null; });
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let chartStation = null;
 async function openChart(o) {
+  chartStation = o;
   const my = ++chartReq;
   chartbox.hidden = false;
   document.getElementById("chartTitle").textContent = o.name;
@@ -1034,6 +1067,31 @@ map.on("mouseout", () => {
 });
 // 勾選或取消雷達、海溫，以及切換時間時，立刻更新游標處的數值
 ["radarToggle", "sstToggle"].forEach(id => document.getElementById(id).addEventListener("change", () => setTimeout(() => lastLL && updateReadout(lastLL), 300)));
+
+/* ---------- 自動更新：網頁開著時，各項資料定期重新讀取 ----------
+   衛星雲圖：每 5 分鐘（停在最新一張時會自動跳到新圖）  雷達：每 5 分鐘
+   測站與折線圖：每 5 分鐘  颱風路徑：每 5 分鐘（有新資料才重畫）  海溫：每小時檢查是否換日 */
+function refreshRadar() {
+  radarFrames = [];   // 清掉舊的時間清單，下次顯示時重新向 RainViewer 取得
+  if (document.getElementById("radarToggle").checked) showRadar();
+}
+function refreshSst() {
+  const cb = document.getElementById("sstToggle");
+  if (cb.checked && sstShownDay !== sstDay()) cb.dispatchEvent(new Event("change"));
+}
+function refreshAll() {
+  refreshLatest(); refreshRadar(); loadObs(); loadTracks(); refreshSst();
+}
+setInterval(refreshRadar, 5 * 60000);
+setInterval(loadObs, 5 * 60000);
+setInterval(loadTracks, 5 * 60000);
+setInterval(refreshSst, 60 * 60000);
+// 手機切到別的 App 或電腦切換分頁時，計時器可能被暫停；回到網頁時立刻全部更新一次
+let hiddenAt = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (Date.now() - hiddenAt > 60000) refreshAll();
+});
 
 showClock(); buildSat(true); drawGrid(); loadTracks(); refreshLatest();
 </script>
