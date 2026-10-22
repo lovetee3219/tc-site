@@ -204,8 +204,14 @@ const CONFIG = {
     official: ["#ffffff", "#ffe066"],
     nwp: ["#4cc9f0", "#4895ef", "#80ed99", "#56cfe1", "#a0c4ff", "#72efdd", "#b8f2e6"],
     ai: ["#ff70a6", "#ff9770", "#ffd670", "#e980fc"],
-    ens: ["#8fd3ff", "#b5f5c4", "#d4c2ff", "#ffd1a8"],   // 系集成員：細線、半透明
+    ens: ["#8fd3ff", "#b5f5c4", "#d4c2ff", "#a0c4ff", "#c7f9cc"],   // 系集成員：細線、半透明
   },
+  // 指定特定來源的顏色（優先於上面的 palette）
+  modelColors: {
+    JTWC: "#ffffff", OFCL: "#ffffff", RJTD: "#ff6b6b", RCTP: "#ffd23f", VHHH: "#7ee0a1",
+    ECMF: "#4895ef", EEMN: "#90c2ff", AIFS: "#ff70a6", AIEMN: "#ffa3c7",
+  },
+  groupColors: { "ECMWF 系集成員": "#90c2ff", "AIFS 系集成員": "#ffa3c7" },
 };
 /* ======================================================================== */
 
@@ -216,7 +222,9 @@ L.control.zoom({ position: "topright" }).addTo(map);
 
 // 只畫海陸邊界線（Natural Earth 1:5000 萬海岸線，公有領域資料）
 map.attributionControl.setPrefix(false).addAttribution(
-  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>');
+  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>' +
+  ' · 路徑：<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://www.cwa.gov.tw/">中央氣象署</a>、JTWC、NCAR TCGP、' +
+  'Based on data and products of <a href="https://www.ecmwf.int/">ECMWF</a> (CC BY 4.0)');
 map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
 map.getPane("coast").style.pointerEvents = "none";
 const coastRenderer = L.canvas({ pane: "coast" });
@@ -462,7 +470,7 @@ function drawForecast(f, color) {
     const m = L.circleMarker(ll[i], { pane: "tracks", radius: f.category === "official" ? 4 : 2.5, color, fillColor: color, fillOpacity: 1, weight: 1 })
       .bindTooltip(`<b>${esc(f.label)}</b>　+${p.tau} 小時<br>${fmtTime(valid)}${p.vmax ? `<br>最大風速 ${p.vmax} 節` : ""}${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" });
     m.addTo(g);
-    if (f.category === "official" && p.tau > 0 && p.tau % 24 === 0) {
+    if (f.tauLabels && p.tau > 0 && p.tau % 24 === 0) {
       L.marker(ll[i], { pane: "tracks", interactive: false, icon: L.divIcon({ className: "tau-label", html: `${p.tau}h`, iconAnchor: [-6, 8] }) }).addTo(g);
     }
   });
@@ -493,18 +501,23 @@ async function loadTracks() {
   data.storms.forEach(storm => {
     const wrap = document.createElement("div");
     wrap.innerHTML = `<div class="storm-name">${esc(storm.name)}</div>` + (storm.demo ? '<p class="note warn">這是虛構的示範路徑，接上真實資料來源後會自動替換。</p>' : "");
-    const bestKey = storm.id + ":best";
-    trackLayers[bestKey] = drawBest(storm).addTo(map);
-    wrap.insertAdjacentHTML("beforeend", `<label class="row"><input type="checkbox" checked data-key="${bestKey}"> 實測路徑</label>`);
+    if (storm.best.length) {
+      const bestKey = storm.id + ":best";
+      trackLayers[bestKey] = drawBest(storm).addTo(map);
+      wrap.insertAdjacentHTML("beforeend", `<label class="row"><input type="checkbox" checked data-key="${bestKey}"> 實測路徑</label>`);
+    }
 
     const newest = Math.max(...storm.forecasts.map(f => Date.parse(f.init)));
     const fmtInit = iso => { const d = new Date(iso); return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")} ${String(d.getUTCHours()).padStart(2, "0")}Z 起報`; };
     ["official", "nwp", "ai"].forEach(cat => {
-      const list = storm.forecasts.filter(f => f.category === cat);
+      const ORDER = ["JTWC", "OFCL", "RJTD", "RCTP"];
+      const rank = m => (ORDER.indexOf(m) + 1) || 99;
+      const list = storm.forecasts.filter(f => f.category === cat).sort((a, b) => rank(a.model) - rank(b.model));
       if (!list.length) return;
       wrap.insertAdjacentHTML("beforeend", `<div class="cat">${CAT_NAME[cat]}</div>`);
       list.forEach((f, i) => {
-        const color = CONFIG.palette[cat][i % CONFIG.palette[cat].length];
+        const color = CONFIG.modelColors[f.model] || CONFIG.palette[cat][i % CONFIG.palette[cat].length];
+        f.tauLabels = cat === "official" && i === 0;   // 只在第一條官方路徑標 24h、48h…，避免文字重疊
         const key = `${storm.id}:${f.model}`;
         const stale = newest - Date.parse(f.init) >= 12 * 3600000;   // 比最新的預報早 12 小時以上
         trackLayers[key] = drawForecast(f, color).addTo(map);
@@ -521,7 +534,7 @@ async function loadTracks() {
     const groups = Object.keys(ens);
     if (groups.length) wrap.insertAdjacentHTML("beforeend", `<div class="cat">系集成員</div>`);
     groups.forEach((name, i) => {
-      const color = CONFIG.palette.ens[i % CONFIG.palette.ens.length];
+      const color = CONFIG.groupColors[name] || CONFIG.palette.ens[i % CONFIG.palette.ens.length];
       const key = `${storm.id}:ens:${name}`;
       const g = L.layerGroup();
       ens[name].forEach(f => L.polyline(unwrap(f.points), { pane: "tracks", color, weight: 1, opacity: 0.55 })
