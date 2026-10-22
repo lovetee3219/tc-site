@@ -33,7 +33,9 @@ SOURCES = [
     # 名稱會自動從 ATCF 檔讀取，不需要再填 "name"
     {"storm": "WP292026",
      "adeck": "https://hurricanes.ral.ucar.edu/repository/data/adecks_open/awp292026.dat",
-     "bdeck": "https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/bwp292026.dat"},
+     # b-deck 可以填多個網址，程式會依序嘗試，抓到為止
+     "bdeck": ["https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/bwp292026.dat",
+               "https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/2026/bwp292026.dat"]},
     # {"storm": "AL092026",
     #  "adeck": "https://ftp.nhc.noaa.gov/atcf/aid_public/aal092026.dat.gz",
     #  "bdeck": "https://ftp.nhc.noaa.gov/atcf/btk/bal092026.dat"},
@@ -60,14 +62,46 @@ MODELS = {
     "HAFA": ("HAFS-A", "nwp"),
     "HAFB": ("HAFS-B", "nwp"),
     "AEMN": ("GEFS 系集平均", "nwp"),
+    "CEMN": ("加拿大 GEPS 系集平均", "nwp"),
+    "NEMN": ("美國海軍系集平均", "nwp"),
     "EEMN": ("ECMWF 系集平均", "nwp"),
+    "NGX":  ("美國海軍全球模式", "nwp"),
     # AI 模式的 ATCF 代碼尚未統一，以下為佔位，請依資料來源實際使用的代碼修改
     "AIFS": ("ECMWF AIFS", "ai"),
     "GDMI": ("Google DeepMind", "ai"),
 }
 
 
-def fetch_text(url: str) -> str:
+# 系集成員：代碼開頭 → 群組名稱。同一群組在網站上用一個勾選框一起開關。
+# 例：AP01~AP30 是 GEFS 的 30 個成員，AC00 是控制組。
+ENSEMBLES = {
+    "AP": "GEFS 系集成員", "AC": "GEFS 系集成員",
+    "CP": "加拿大 GEPS 成員", "CC": "加拿大 GEPS 成員",
+    "NP": "美國海軍系集成員", "NC": "美國海軍系集成員",
+    "EP": "ECMWF 系集成員", "EC": "ECMWF 系集成員",
+}
+
+
+def classify(tech):
+    """回傳 (顯示名稱, 分類, 系集群組)；不認得的代碼回傳 None。"""
+    if tech in MODELS:
+        label, cat = MODELS[tech]
+        return label, cat, None
+    if len(tech) == 4 and tech[2:].isdigit() and tech[:2] in ENSEMBLES:
+        return tech, "ens", ENSEMBLES[tech[:2]]
+    return None
+
+
+def fetch_text(url) -> str:
+    """url 可以是單一網址或清單；清單會依序嘗試，回傳第一個成功的。"""
+    if isinstance(url, (list, tuple)):
+        last = None
+        for u in url:
+            try:
+                return fetch_text(u)
+            except Exception as e:
+                last = e
+        raise last
     req = urllib.request.Request(url, headers={"User-Agent": "tc-site/0.1 (personal project)"})
     with urllib.request.urlopen(req, timeout=60) as r:
         raw = r.read()
@@ -121,7 +155,7 @@ def latest_runs(runs):
     """每個模式只保留最新一次起報。"""
     best = {}
     for (tech, init), pts in runs.items():
-        if tech in MODELS and (tech not in best or init > best[tech][0]):
+        if classify(tech) and (tech not in best or init > best[tech][0]):
             best[tech] = (init, pts)
     return best
 
@@ -155,10 +189,14 @@ def build_storm(src):
             for tech, (init, pts) in latest_runs(runs).items():
                 if len(pts) < 2:
                     continue
-                label, cat = MODELS[tech]
-                storm["forecasts"].append({"model": tech, "label": label, "category": cat,
-                                           "init": iso(init), "points": pts})
-            print("  會顯示的預報：", " ".join(f["model"] for f in storm["forecasts"]) or "（無，代碼都不在 MODELS 表內）")
+                label, cat, group = classify(tech)
+                fc = {"model": tech, "label": label, "category": cat, "init": iso(init), "points": pts}
+                if group:
+                    fc["group"] = group
+                storm["forecasts"].append(fc)
+            shown = [f["model"] for f in storm["forecasts"] if f["category"] != "ens"]
+            groups = sorted({f["group"] for f in storm["forecasts"] if f["category"] == "ens"})
+            print("  會顯示的預報：", " ".join(shown) or "（無）", "｜系集：", "、".join(groups) or "（無）")
         except Exception as e:
             print("  a-deck 失敗：", e)
     if auto_name:  # 自動抓到的名稱優先，例如「Champi（WP29）」
