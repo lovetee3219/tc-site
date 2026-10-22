@@ -1,18 +1,30 @@
-# 每 3 小時自動執行一次：下載最新路徑與風場資料，存回 data/ 資料夾。
-# 也可以到 GitHub 的 Actions 頁面按「Run workflow」手動執行。
+# 每 3 小時自動執行一次：下載最新路徑資料，存回 data/ 資料夾，並直接發布網站。
+# 你上傳或修改檔案時也會自動執行一次；也可以到 Actions 頁面按「Run workflow」手動執行。
 name: 更新資料
 
 on:
   schedule:
     - cron: "17 */3 * * *"   # UTC 時間每 3 小時的第 17 分
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
+
+# 同一時間只跑一個，避免兩次更新互相覆蓋
+concurrency:
+  group: update-data
+  cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +33,7 @@ jobs:
           python-version: "3.12"
 
       - name: 安裝套件
-        run: pip install xarray cfgrib eccodes numpy ecmwf-opendata
+        run: pip install eccodes ecmwf-opendata
 
       - name: 準備海岸線檔案（只有第一次會真的執行）
         run: python scripts/build_coast.py
@@ -31,14 +43,21 @@ jobs:
         env:
           CWA_API_KEY: ${{ secrets.CWA_API_KEY }}   # 中央氣象署授權碼，存在 GitHub Secret 裡
 
-      - name: 下載 GFS 風場
-        run: python scripts/fetch_wind.py
-        continue-on-error: true   # 風場失敗時，仍保留路徑資料的更新
-
       - name: 存回儲存庫
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
           git diff --cached --quiet || git commit -m "自動更新資料 $(date -u +%Y-%m-%dT%H:%MZ)"
+          git pull --rebase --autostash || true
           git push
+
+      # ↓ 直接把網站發布出去，不必等 GitHub 另外觸發
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
