@@ -52,6 +52,13 @@ jobs:
           git pull --rebase --autostash || true
           git push
 
+      # 測站的過去 24 小時觀測存在 GitHub 的快取裡，每次執行接著累積
+      - uses: actions/cache@v4
+        with:
+          path: .cache
+          key: stations-history-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: stations-history-
+
       - name: 下載測站觀測（不存進儲存庫，只隨網站發布）
         run: python scripts/fetch_stations.py
         env:
