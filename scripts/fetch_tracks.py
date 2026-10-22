@@ -30,10 +30,11 @@ OUT = Path(__file__).resolve().parent.parent / "data" / "tracks.json"
 #   其他海域（西北太平洋 wp、北印度洋 io、南半球 sh）可找研究單位的公開鏡像，
 #   例如 UCAR/NCAR RAL 的熱帶氣旋導引資料，網址請到其網站確認。
 SOURCES = [
-    {"storm": "WP292026", "name": "颱風名稱",
+    # 名稱會自動從 ATCF 檔讀取，不需要再填 "name"
+    {"storm": "WP292026",
      "adeck": "https://hurricanes.ral.ucar.edu/repository/data/adecks_open/awp292026.dat",
      "bdeck": "https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/bwp292026.dat"},
-    # {"storm": "AL092026", "name": "颶風範例",
+    # {"storm": "AL092026",
     #  "adeck": "https://ftp.nhc.noaa.gov/atcf/aid_public/aal092026.dat.gz",
     #  "bdeck": "https://ftp.nhc.noaa.gov/atcf/btk/bal092026.dat"},
 ]
@@ -102,6 +103,20 @@ def parse_atcf(text: str):
     return {k: sorted(v.values(), key=lambda p: p["tau"]) for k, v in runs.items()}
 
 
+NOT_NAMES = {"", "INVEST", "NONAME", "UNNAMED", "NAMELESS"}
+
+
+def find_name(text: str):
+    """從 ATCF 第 28 欄（STORMNAME）找最新一筆颱風名稱，例如 CHAMPI → Champi。"""
+    best = ("", None)
+    for line in text.splitlines():
+        f = [x.strip() for x in line.split(",")]
+        if len(f) > 27 and f[27].upper() not in NOT_NAMES and f[27].replace("-", "").isalpha():
+            if f[2] >= best[0]:
+                best = (f[2], f[27])
+    return best[1].title() if best[1] else None
+
+
 def latest_runs(runs):
     """每個模式只保留最新一次起報。"""
     best = {}
@@ -118,10 +133,13 @@ def iso(yyyymmddhh: str) -> str:
 
 def build_storm(src):
     """a-deck 與 b-deck 分開處理：其中一個抓不到，另一個仍會顯示。"""
-    storm = {"id": src["storm"], "name": src.get("name", src["storm"]), "best": [], "forecasts": []}
+    storm = {"id": src["storm"], "name": src.get("name") or src["storm"], "best": [], "forecasts": []}
+    auto_name = None
     if src.get("bdeck"):
         try:
-            b = parse_atcf(fetch_text(src["bdeck"]))
+            text = fetch_text(src["bdeck"])
+            auto_name = find_name(text)
+            b = parse_atcf(text)
             pts = sorted(((init, p[0]) for (_, init), p in b.items() if p), key=lambda x: x[0])
             storm["best"] = [{**p, "time": iso(init)} for init, p in pts]
             print(f"  b-deck：{len(storm['best'])} 個實測點")
@@ -129,7 +147,9 @@ def build_storm(src):
             print("  b-deck 失敗：", e)
     if src.get("adeck"):
         try:
-            runs = parse_atcf(fetch_text(src["adeck"]))
+            text = fetch_text(src["adeck"])
+            auto_name = auto_name or find_name(text)
+            runs = parse_atcf(text)
             found = sorted({tech for tech, _ in runs})
             print("  a-deck 內的模式代碼：", " ".join(found))
             for tech, (init, pts) in latest_runs(runs).items():
@@ -141,6 +161,9 @@ def build_storm(src):
             print("  會顯示的預報：", " ".join(f["model"] for f in storm["forecasts"]) or "（無，代碼都不在 MODELS 表內）")
         except Exception as e:
             print("  a-deck 失敗：", e)
+    if auto_name:  # 自動抓到的名稱優先，例如「Champi（WP29）」
+        storm["name"] = f"{auto_name}（{src['storm'][:4]}）"
+    print("  名稱：", storm["name"])
     return storm
 
 
