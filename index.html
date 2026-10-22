@@ -115,6 +115,20 @@
   .coords .lbl { font-size: 12.5px; color: var(--ink-soft); line-height: 1.3; }
   .coords .val { font-family: var(--num); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .01em; white-space: nowrap; }
   .coords .val.idle { color: var(--ink-soft); font-weight: 500; font-family: var(--sans); font-size: 15px; }
+  /* 點測站後出現在時間列上方的折線圖 */
+  .chartbox {
+    position: fixed; z-index: 1001; left: 324px; right: 12px; height: 240px;
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+    background: var(--panel); backdrop-filter: blur(8px); border-radius: 10px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; padding: 10px 14px 8px;
+  }
+  .chartbox[hidden] { display: none; }
+  .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
+  .chart-head span { color: var(--ink-soft); font-size: 12.5px; }
+  .chart-close { font: inherit; border: 0; background: transparent; color: var(--ink-soft); font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+  .chart-close:hover { color: var(--ink); background: var(--rule); }
+  .chart-wrap { position: relative; flex: 1; min-height: 0; }
+  .chart-wrap .note { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; text-align: center; }
   .timebar {
     position: fixed; z-index: 1000; left: 324px; right: 12px;
     bottom: calc(12px + env(safe-area-inset-bottom, 0px));
@@ -153,6 +167,7 @@
     .timebar { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom, 0px)); gap: 10px; padding: 8px 12px; }
     .clock { min-width: 118px; } .clock .utc { font-size: 21px; }
     .leaflet-control-zoom { display: none; }
+    .chartbox { left: 8px; right: 8px; height: 220px; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
   }
   @media (prefers-reduced-motion: reduce) { .panel { transition: none; } }
 </style>
@@ -214,6 +229,14 @@
     <span class="sub" id="coordSub" hidden></span>
   </span>
 </div>
+
+<section class="chartbox" id="chartbox" hidden aria-label="測站過去 24 小時觀測">
+  <div class="chart-head">
+    <div><b id="chartTitle"></b> <span id="chartSub"></span></div>
+    <button class="chart-close" id="chartClose" aria-label="關閉圖表">✕</button>
+  </div>
+  <div class="chart-wrap"><canvas id="chartCanvas"></canvas><p class="note" id="chartMsg"></p></div>
+</section>
 
 <div class="timebar" role="group" aria-label="衛星時間">
   <button class="play" id="play" aria-label="播放動畫">▶</button>
@@ -789,7 +812,8 @@ function drawObs() {
       if (taken.has(cell)) continue;
       taken.add(cell);
       L.marker(ll, { pane: "obs", keyboard: false, icon: L.divIcon({ className: "obs-icon", html: barbSVG(o.ws, o.wd), iconSize: [28, 28], iconAnchor: [14, 14] }) })
-        .bindTooltip(obsTip(o), { className: "tc-tip", direction: "top", offset: [0, -6] }).addTo(obsLayer);
+        .bindTooltip(obsTip(o), { className: "tc-tip", direction: "top", offset: [0, -6] })
+        .on("click", () => openChart(o)).addTo(obsLayer);
     }
   });
 }
@@ -809,6 +833,73 @@ map.on("moveend", drawObs);
 document.getElementById("obsToggle").addEventListener("change", drawObs);
 setInterval(loadObs, 10 * 60000);   // 每 10 分鐘重新讀一次
 loadObs();
+
+/* ---------- 測站過去 24 小時折線圖（Chart.js 第一次點測站時才載入） ---------- */
+const CHARTJS = "https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js";
+let chartJsReady = null, chart = null, chartReq = 0;
+function loadChartJs() {
+  return chartJsReady ||= new Promise((res, rej) => {
+    const sc = document.createElement("script");
+    sc.src = CHARTJS; sc.onload = res; sc.onerror = () => { chartJsReady = null; rej(); };
+    document.head.appendChild(sc);
+  });
+}
+const chartbox = document.getElementById("chartbox"), chartMsg = document.getElementById("chartMsg");
+document.getElementById("chartClose").addEventListener("click", () => { chartbox.hidden = true; });
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+async function openChart(o) {
+  const my = ++chartReq;
+  chartbox.hidden = false;
+  document.getElementById("chartTitle").textContent = o.name;
+  document.getElementById("chartSub").textContent = `${o.src === "CWA" ? "中央氣象署" : "日本氣象廳"}・過去 24 小時・氣壓為${o.pType}氣壓`;
+  chartMsg.textContent = "讀取中…";
+  if (chart) { chart.destroy(); chart = null; }
+  let h;
+  try {
+    await loadChartJs();
+    h = await fetch(`data/history/${encodeURIComponent(o.src + "_" + o.id)}.json`, { cache: "no-cache" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+  } catch {
+    if (my === chartReq) chartMsg.textContent = "這個測站還沒有歷史資料。網站每 20 分鐘累積一筆，最多保留 24 小時。";
+    return;
+  }
+  if (my !== chartReq) return;   // 使用者已經點了別的測站
+  const xs = h.t.map(m => m * 60000);
+  const pts = arr => arr.map((v, i) => ({ x: xs[i], y: v }));
+  chartMsg.textContent = xs.length < 2 ? "資料累積中，目前只有 1 筆。" : "";
+  const ink = cssVar("--ink"), soft = cssVar("--ink-soft"), rule = cssVar("--rule");
+  const hhmm = v => new Date(v).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+  chart = new Chart(document.getElementById("chartCanvas"), {
+    type: "line",
+    data: { datasets: [
+      { label: "平均風速 (m/s)", data: pts(h.ws), yAxisID: "yw", borderColor: "#4cc9f0", backgroundColor: "#4cc9f0", borderWidth: 2, pointRadius: 1.5, spanGaps: true },
+      { label: "瞬間風速 (m/s)", data: pts(h.gust), yAxisID: "yw", borderColor: "#ff9770", backgroundColor: "#ff9770", borderWidth: 1.6, borderDash: [5, 3], pointRadius: 1.5, spanGaps: true },
+      { label: "氣壓 (hPa)", data: pts(h.p), yAxisID: "yp", borderColor: "#c9b6ff", backgroundColor: "#c9b6ff", borderWidth: 2, pointRadius: 0, spanGaps: true },
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { labels: { color: ink, boxWidth: 14, boxHeight: 2, font: { size: 12 } } },
+        tooltip: { callbacks: { title: items => new Date(items[0].parsed.x).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) } },
+      },
+      scales: {
+        x: { type: "linear", min: Date.now() - 24 * 3600000, max: Date.now(),
+             // 刻度對齊整點：每 3 小時一格（本地時間 0、3、6…點）
+             afterBuildTicks: axis => {
+               const d = new Date(axis.min); d.setMinutes(0, 0, 0);
+               while (d.getHours() % 3 || d.getTime() < axis.min) d.setTime(d.getTime() + 3600000);
+               axis.ticks = [];
+               for (let t = d.getTime(); t <= axis.max; t += 3 * 3600000) axis.ticks.push({ value: t });
+             },
+             ticks: { color: soft, callback: hhmm, maxRotation: 0, autoSkip: true }, grid: { color: rule } },
+        yw: { position: "left", beginAtZero: true, title: { display: true, text: "風速 m/s", color: soft },
+              ticks: { color: soft }, grid: { color: rule } },
+        yp: { position: "right", title: { display: true, text: "氣壓 hPa", color: soft },
+              ticks: { color: soft }, grid: { drawOnChartArea: false } },
+      },
+    },
+  });
+}
 
 /* ---------- 游標經緯度 ---------- */
 const coordVal = document.getElementById("coordVal");
