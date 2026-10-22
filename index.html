@@ -77,6 +77,13 @@
   .swatch.nwp { border-top-style: dashed; }
   .swatch.ai { border-top-style: dotted; border-top-width: 4px; }
   .model-code { margin-left: auto; font-family: var(--num); color: var(--ink-soft); font-size: 13px; }
+  .row.model { align-items: flex-start; }
+  .row.model input, .row.model .swatch { margin-top: 4px; }
+  .row.model .swatch { margin-top: 9px; }
+  .model-text { display: flex; flex-direction: column; line-height: 1.3; }
+  .model-init { font-size: 12px; color: var(--ink-soft); font-family: var(--num); letter-spacing: .02em; }
+  .model-init.stale { color: var(--warn); }
+  .grid-label { font-family: var(--num); font-size: 12px; font-weight: 500; color: rgba(255,255,255,.75); text-shadow: 0 0 3px #000; white-space: nowrap; }
   .intensity { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 6px; }
   .intensity span { font-size: 11px; text-align: center; padding: 2px 0; border-radius: 3px; color: #10202c; }
 
@@ -149,6 +156,7 @@
     <label class="row"><input type="checkbox" id="radarToggle"> 雷達回波（RainViewer）</label>
     <label class="row"><input type="checkbox" id="sstToggle"> 海溫（GHRSST MUR，前一日）</label>
     <label class="row"><input type="checkbox" id="windToggle"> 地面風場（GFS 10 公尺）</label>
+    <label class="row"><input type="checkbox" id="gridToggle" checked> 經緯線</label>
     <p class="note" id="windNote"></p>
   </section>
 
@@ -176,6 +184,8 @@ const CONFIG = {
   stepMin: 20,         // 每張相隔幾分鐘
   latencyMin: 60,      // GIBS 即時資料大約延遲多久才上線
   // NASA GIBS 圖層名稱（可到 NASA Worldview 查更多）
+  // 每顆衛星的星下點經度：畫面離衛星太遠時就不下載那顆衛星的圖，節省流量
+  satLon: { "GOES-West": -137.2, "GOES-East": -75.2, "Himawari": 140.7 },
   sat: {
     ir:      { level: 6, layers: ["GOES-West_ABI_Band13_Clean_Infrared", "GOES-East_ABI_Band13_Clean_Infrared", "Himawari_AHI_Band13_Clean_Infrared"] },
     airmass: { level: 6, layers: ["GOES-West_ABI_Air_Mass", "GOES-East_ABI_Air_Mass", "Himawari_AHI_Air_Mass"] },
@@ -184,10 +194,11 @@ const CONFIG = {
   sstLayer: "GHRSST_L4_MUR_Sea_Surface_Temperature",
   // 海陸邊界線：顏色與粗細可自行調整
   coast: {
-    url: "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_50m_coastline.geojson",
     color: "#f2d14b",
     weight: 1,
+    detailZoom: 5,     // 放大到這個等級以上，改用精細海岸線
   },
+  grid: { color: "#ffffff", opacity: 0.35 },
   // 路徑顏色：官方用白色實線，數值模式用冷色虛線，AI 模式用暖色點線
   palette: {
     official: ["#ffffff", "#ffe066"],
@@ -207,15 +218,74 @@ map.attributionControl.setPrefix(false).addAttribution(
   '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>');
 map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
 map.getPane("coast").style.pointerEvents = "none";
-fetch(CONFIG.coast.url).then(r => r.json()).then(gj => {
-  const renderer = L.canvas({ pane: "coast" });
-  // 左右各多畫一份，跨越國際換日線時海岸線才不會斷掉
-  [-360, 0, 360].forEach(offset => L.geoJSON(gj, {
-    renderer, interactive: false,
-    style: { color: CONFIG.coast.color, weight: CONFIG.coast.weight, opacity: 0.9 },
-    coordsToLatLng: c => L.latLng(c[1], c[0] + offset),
-  }).addTo(map));
-}).catch(() => console.warn("海岸線載入失敗"));
+const coastRenderer = L.canvas({ pane: "coast" });
+const coastStyle = () => ({ renderer: coastRenderer, interactive: false, color: CONFIG.coast.color, weight: CONFIG.coast.weight, opacity: 0.9 });
+const toLatLngs = (lines, offset) => lines.map(l => l.map(([x, y]) => [y, x + offset]));
+
+// 縮小時：整份 1:5000 萬海岸線，左右各多畫一份，跨越換日線才不會斷
+const coarseCoast = L.layerGroup();
+fetch("data/coast_50m.json").then(r => r.json()).then(lines => {
+  [-360, 0, 360].forEach(off => L.polyline(toLatLngs(lines, off), coastStyle()).addTo(coarseCoast));
+  updateCoast();
+}).catch(() => console.warn("海岸線載入失敗：請確認 data/coast_50m.json 存在"));
+
+// 放大時：1:1000 萬精細海岸線，切成 10°×10° 小塊，只下載畫面範圍內的
+const fineCoast = L.layerGroup(), fineCache = {}, fineShown = {};
+let fineIndex = null;
+fetch("data/coast10/index.json").then(r => r.json()).then(list => { fineIndex = new Set(list); updateCoast(); }).catch(() => {});
+
+function updateCoast() {
+  const fine = map.getZoom() >= CONFIG.coast.detailZoom && fineIndex;
+  if (fine) { map.removeLayer(coarseCoast); fineCoast.addTo(map); }
+  else { map.removeLayer(fineCoast); coarseCoast.addTo(map); return; }
+  const b = map.getBounds().pad(0.3);
+  const want = new Set();
+  for (let lat = Math.floor(b.getSouth() / 10) * 10; lat < b.getNorth(); lat += 10) {
+    for (let lonU = Math.floor(b.getWest() / 10) * 10; lonU < b.getEast(); lonU += 10) {
+      const off = Math.floor((lonU + 180) / 360) * 360;
+      const key = `${lat}_${lonU - off}`;
+      if (fineIndex.has(key)) want.add(`${key}@${off}`);
+    }
+  }
+  Object.keys(fineShown).forEach(k => { if (!want.has(k)) { fineCoast.removeLayer(fineShown[k]); delete fineShown[k]; } });
+  want.forEach(k => {
+    if (fineShown[k]) return;
+    const [key, off] = k.split("@");
+    fineShown[k] = L.layerGroup().addTo(fineCoast);
+    (fineCache[key] ||= fetch(`data/coast10/${key}.json`).then(r => r.json()))
+      .then(lines => fineShown[k] && L.polyline(toLatLngs(lines, +off), coastStyle()).addTo(fineShown[k]));
+  });
+}
+map.on("moveend", updateCoast);
+
+/* ---------- 經緯線：依縮放等級調整間距，最密 1° ---------- */
+map.createPane("grid").style.zIndex = 440;
+map.getPane("grid").style.pointerEvents = "none";
+const gridLayer = L.layerGroup(), gridRenderer = L.canvas({ pane: "grid" });
+const gridStep = z => z <= 2 ? 30 : z <= 3 ? 20 : z <= 4 ? 10 : z <= 5 ? 5 : z <= 6 ? 2 : 1;
+const fmtLat = v => v === 0 ? "0°" : `${Math.abs(v)}°${v > 0 ? "N" : "S"}`;
+const fmtLon = v => { const n = ((v + 180) % 360 + 360) % 360 - 180; return n === 0 || n === -180 ? (n ? "180°" : "0°") : `${Math.abs(n)}°${n > 0 ? "E" : "W"}`; };
+function drawGrid() {
+  gridLayer.clearLayers();
+  if (!document.getElementById("gridToggle").checked) return;
+  const v = map.getBounds(), b = v.pad(0.2), st = gridStep(map.getZoom());
+  const style = { renderer: gridRenderer, interactive: false, color: CONFIG.grid.color, opacity: CONFIG.grid.opacity, weight: 0.8 };
+  const lat0 = Math.max(-80, Math.ceil(b.getSouth() / st) * st), lat1 = Math.min(80, Math.floor(b.getNorth() / st) * st);
+  const lon0 = Math.ceil(b.getWest() / st) * st, lon1 = Math.floor(b.getEast() / st) * st;
+  const label = (ll, text, anchor) => L.marker(ll, { pane: "grid", interactive: false, keyboard: false,
+    icon: L.divIcon({ className: "grid-label", html: text, iconSize: null, iconAnchor: anchor }) }).addTo(gridLayer);
+  for (let lat = lat0; lat <= lat1; lat += st) {
+    L.polyline([[lat, b.getWest()], [lat, b.getEast()]], style).addTo(gridLayer);
+    if (lat > v.getSouth() && lat < v.getNorth()) label([lat, v.getEast()], fmtLat(lat), [44, 7]);   // 緯度標在右緣
+  }
+  for (let lon = lon0; lon <= lon1; lon += st) {
+    L.polyline([[Math.max(-85, b.getSouth()), lon], [Math.min(85, b.getNorth()), lon]], style).addTo(gridLayer);
+    if (lon > v.getWest() && lon < v.getEast()) label([v.getNorth(), lon], fmtLon(lon), [-3, -4]);    // 經度標在上緣
+  }
+}
+gridLayer.addTo(map);
+map.on("moveend", drawGrid);
+document.getElementById("gridToggle").addEventListener("change", drawGrid);
 
 /* ---------- 時間軸 ---------- */
 function latestTime() {
@@ -241,27 +311,65 @@ function showClock() {
     "本地 " + d.toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-/* ---------- 衛星雲圖：每個時間一組圖層，預先載入，切換時只改透明度 ---------- */
-let satMode = "ir", satFrames = [], satOpacity = 0.85;
+/* ---------- 衛星雲圖 ----------
+   載入策略：平常只下載「目前這一張」；按下播放才下載其餘時間的圖。
+   而且只下載畫面看得到的衛星（例如看西太平洋時不抓 GOES-East）。 */
+let satMode = "ir", satOpacity = 0.85, satGroups = [], satKey = "", timer = null;
 map.createPane("sat").style.zIndex = 250;
 
-function buildSat() {
-  satFrames.forEach(g => map.removeLayer(g));
-  satFrames = [];
-  if (satMode === "off") return;
-  const { level, layers } = CONFIG.sat[satMode];
-  satFrames = times.map((d, i) => L.layerGroup(layers.map(name =>
-    L.tileLayer(`${GIBS}/${name}/default/${gibsTime(d)}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
-      pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: i === frame ? satOpacity : 0, bounds: [[-85, -180], [85, 180]],
-    }))).addTo(map));
+function activeSatLayers() {
+  if (satMode === "off") return [];
+  const b = map.getBounds(), w = b.getWest(), e = b.getEast();
+  return CONFIG.sat[satMode].layers.filter(name => {
+    const sub = CONFIG.satLon[name.split("_")[0]];
+    if (sub === undefined || e - w >= 300) return true;
+    for (let lon = w; lon <= e + 5; lon += 5) {
+      if (Math.abs((((lon - sub) % 360) + 540) % 360 - 180) < 80) return true;
+    }
+    return false;
+  });
+}
+function satGroup(i) {
+  if (!satGroups[i]) {
+    const { level } = CONFIG.sat[satMode];
+    satGroups[i] = L.layerGroup(activeSatLayers().map(name =>
+      L.tileLayer(`${GIBS}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
+        pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0, bounds: [[-85, -180], [85, 180]],
+      })));
+  }
+  return satGroups[i];
+}
+function whenLoaded(group, cb) {
+  const ls = group.getLayers(); let n = 0;
+  if (!ls.length) return cb();
+  ls.forEach(l => (l.isLoading() ? l.once("load", () => ++n === ls.length && cb()) : ++n === ls.length && cb()));
+}
+function pruneSat() {   // 沒在播放時，把其他時間的圖層拿掉，平移縮放就不會重複下載
+  if (timer) return;
+  satGroups.forEach((g, i) => { if (g && i !== frame && map.hasLayer(g)) map.removeLayer(g); });
 }
 function showSatFrame() {
-  satFrames.forEach((g, i) => g.eachLayer(l => l.setOpacity(i === frame ? satOpacity : 0)));
+  if (satMode === "off") return;
+  const g = satGroup(frame);
+  if (!map.hasLayer(g)) g.addTo(map);
+  g.eachLayer(l => l.setOpacity(satOpacity));
+  satGroups.forEach((o, i) => { if (o && i !== frame) o.eachLayer(l => l.setOpacity(0)); });
+  whenLoaded(g, pruneSat);   // 新的一張載完才移除舊的，避免閃一下空白
 }
+function buildSat(force) {
+  const key = satMode + ":" + activeSatLayers().join(",");
+  if (!force && key === satKey) return;
+  satKey = key;
+  satGroups.forEach(g => g && map.removeLayer(g));
+  satGroups = [];
+  if (timer) times.forEach((_, i) => satGroup(i).addTo(map));
+  showSatFrame();
+}
+map.on("moveend", () => buildSat());
 
 document.querySelectorAll("[data-sat]").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll("[data-sat]").forEach(x => x.setAttribute("aria-pressed", x === b));
-  satMode = b.dataset.sat; buildSat();
+  satMode = b.dataset.sat; buildSat(true);
 }));
 document.getElementById("satOpacity").addEventListener("input", e => { satOpacity = +e.target.value; showSatFrame(); });
 
@@ -388,6 +496,8 @@ async function loadTracks() {
     trackLayers[bestKey] = drawBest(storm).addTo(map);
     wrap.insertAdjacentHTML("beforeend", `<label class="row"><input type="checkbox" checked data-key="${bestKey}"> 實測路徑</label>`);
 
+    const newest = Math.max(...storm.forecasts.map(f => Date.parse(f.init)));
+    const fmtInit = iso => { const d = new Date(iso); return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")} ${String(d.getUTCHours()).padStart(2, "0")}Z 起報`; };
     ["official", "nwp", "ai"].forEach(cat => {
       const list = storm.forecasts.filter(f => f.category === cat);
       if (!list.length) return;
@@ -395,9 +505,12 @@ async function loadTracks() {
       list.forEach((f, i) => {
         const color = CONFIG.palette[cat][i % CONFIG.palette[cat].length];
         const key = `${storm.id}:${f.model}`;
+        const stale = newest - Date.parse(f.init) >= 12 * 3600000;   // 比最新的預報早 12 小時以上
         trackLayers[key] = drawForecast(f, color).addTo(map);
         wrap.insertAdjacentHTML("beforeend",
-          `<label class="row"><input type="checkbox" checked data-key="${key}"><span class="swatch ${cat}" style="border-top-color:${color}"></span>${esc(f.label)}<span class="model-code">${esc(f.model)}</span></label>`);
+          `<label class="row model"><input type="checkbox" checked data-key="${key}"><span class="swatch ${cat}" style="border-top-color:${color}"></span>` +
+          `<span class="model-text">${esc(f.label)}<span class="model-init${stale ? " stale" : ""}">${fmtInit(f.init)}${stale ? "（較舊）" : ""}</span></span>` +
+          `<span class="model-code">${esc(f.model)}</span></label>`);
       });
     });
     box.appendChild(wrap);
@@ -415,19 +528,33 @@ async function loadTracks() {
 /* ---------- 播放控制 ---------- */
 function setFrame(i) { frame = i; slider.value = i; showClock(); showSatFrame(); if (radarLayer) showRadar(); }
 slider.addEventListener("input", e => setFrame(+e.target.value));
-let timer = null;
 const playBtn = document.getElementById("play");
+let preparing = false;
 playBtn.addEventListener("click", () => {
-  if (timer) { clearInterval(timer); timer = null; playBtn.textContent = "▶"; playBtn.setAttribute("aria-label", "播放動畫"); return; }
-  playBtn.textContent = "❚❚"; playBtn.setAttribute("aria-label", "暫停動畫");
-  timer = setInterval(() => setFrame((frame + 1) % CONFIG.frames), 700);
+  if (preparing) return;
+  if (timer) {
+    clearInterval(timer); timer = null; pruneSat();
+    playBtn.textContent = "▶"; playBtn.setAttribute("aria-label", "播放動畫"); return;
+  }
+  if (satMode === "off") return;
+  // 先把所有時間的圖下載好（最多等 15 秒），再開始播放
+  preparing = true; playBtn.textContent = "…"; playBtn.setAttribute("aria-label", "載入動畫中");
+  const groups = times.map((_, i) => { const g = satGroup(i); if (!map.hasLayer(g)) g.addTo(map); return g; });
+  let left = groups.length, started = false;
+  const start = () => {
+    if (started) return; started = true; preparing = false;
+    playBtn.textContent = "❚❚"; playBtn.setAttribute("aria-label", "暫停動畫");
+    timer = setInterval(() => setFrame((frame + 1) % CONFIG.frames), 700);
+  };
+  groups.forEach(g => whenLoaded(g, () => --left === 0 && start()));
+  setTimeout(start, 15000);
 });
 
 /* ---------- 手機版面板開關 ---------- */
 const panel = document.getElementById("panel"), tp = document.getElementById("togglePanel");
 tp.addEventListener("click", () => { const o = panel.classList.toggle("open"); tp.setAttribute("aria-expanded", o); tp.textContent = o ? "收起" : "圖層"; });
 
-showClock(); buildSat(); loadTracks();
+showClock(); buildSat(true); drawGrid(); loadTracks();
 </script>
 </body>
 </html>
