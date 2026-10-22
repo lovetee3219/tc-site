@@ -30,10 +30,15 @@ OUT = Path(__file__).resolve().parent.parent / "data" / "tracks.json"
 #   其他海域（西北太平洋 wp、北印度洋 io、南半球 sh）可找研究單位的公開鏡像，
 #   例如 UCAR/NCAR RAL 的熱帶氣旋導引資料，網址請到其網站確認。
 SOURCES = [
+    {"storm": "WP292026", "name": "薔琵",
+     "adeck": "https://hurricanes.ral.ucar.edu/repository/data/adecks_open/awp292026.dat",
+     "bdeck": "https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/bwp292026.dat"},
+]
+#SOURCES = [
     # {"storm": "AL092026", "name": "颶風範例",
     #  "adeck": "https://ftp.nhc.noaa.gov/atcf/aid_public/aal092026.dat.gz",
     #  "bdeck": "https://ftp.nhc.noaa.gov/atcf/btk/bal092026.dat"},
-]
+#]
 
 # ── 模式代碼 → 顯示名稱與分類 ──────────────────────────────────
 # category: official（官方）、nwp（數值模式）、ai（AI 模式）
@@ -41,6 +46,9 @@ SOURCES = [
 MODELS = {
     "OFCL": ("NHC 官方", "official"),
     "JTWC": ("JTWC 官方", "official"),
+    "RJTD": ("JMA 官方", "official"),
+    "RCTP": ("CWA 官方", "official"),
+    "VHHH": ("香港天文台", "official"),
     "AVNO": ("GFS", "nwp"),
     "AVNI": ("GFS（插值）", "nwp"),
     "EMX":  ("ECMWF IFS", "nwp"),
