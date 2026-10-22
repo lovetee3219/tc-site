@@ -117,7 +117,15 @@ def fetch_jma():
     latest = http_get(JMA + "data/latest_time.txt").decode().strip()
     t = datetime.fromisoformat(latest).astimezone(JST)
     table = json.loads(http_get(JMA + "const/amedastable.json"))
-    obs_all = json.loads(http_get(f"{JMA}data/map/{t:%Y%m%d%H%M}00.json"))
+    # 最新時間的檔案偶爾還沒放上去，往前找最多 30 分鐘
+    for back in range(4):
+        try:
+            obs_all = json.loads(http_get(f"{JMA}data/map/{t:%Y%m%d%H%M}00.json"))
+            break
+        except Exception:
+            if back == 3:
+                raise
+            t -= timedelta(minutes=10)
     out = []
     for code, obs in obs_all.items():
         ws = val(obs, "wind")
@@ -202,13 +210,48 @@ def save_history(stations):
     print(f"歷史資料：{len(store)} 站，最多累積 {longest} 筆")
 
 
+LAST = ROOT / ".cache" / "stations_last.json"   # 各來源最後一次成功的資料
+MAX_STALE_HOURS = 3
+
+
+def load_last():
+    """讀取上次成功的資料：先找 GitHub 快取，沒有的話從網站上目前的 stations.json 拿。"""
+    try:
+        return json.loads(LAST.read_text())
+    except Exception:
+        pass
+    url = site_url()
+    if url:
+        try:
+            d = json.loads(http_get(url + "data/stations.json", timeout=60))
+            out = {}
+            for st in d.get("stations", []):
+                out.setdefault(st["src"], []).append(st)
+            return out
+        except Exception:
+            pass
+    return {}
+
+
 def main():
-    stations = []
+    stations, last, good = [], load_last(), {}
+    limit = datetime.now(timezone.utc) - timedelta(hours=MAX_STALE_HOURS)
     for name, fn in (("CWA", fetch_cwa), ("JMA", fetch_jma)):
         try:
-            stations += fn()
+            got = fn()
+            if not got:
+                raise ValueError("沒有任何測站資料")
+            stations += got
+            good[name] = got
         except Exception as e:
-            print(f"{name} 失敗：", e)
+            # 這次抓不到：沿用上次成功的資料（3 小時內），網頁上的測站才不會整批消失
+            old = [st for st in last.get(name, [])
+                   if datetime.fromisoformat(st["time"].replace("Z", "+00:00")) >= limit]
+            stations += old
+            good[name] = last.get(name, [])
+            print(f"{name} 失敗：{e}；沿用上次的 {len(old)} 站資料")
+    LAST.parent.mkdir(parents=True, exist_ok=True)
+    LAST.write_text(json.dumps(good, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps({"updated": to_iso(datetime.now(timezone.utc)), "stations": stations},
                               ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

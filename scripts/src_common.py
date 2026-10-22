@@ -1,4 +1,6 @@
 """各資料來源共用的小工具。"""
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -6,10 +8,20 @@ UA = "Mozilla/5.0 (tc-site personal project; GitHub Actions)"
 MS_TO_KT = 1.943844
 
 
-def http_get(url, headers=None, timeout=60) -> bytes:
+def http_get(url, headers=None, timeout=60, retries=2) -> bytes:
+    """下載網址內容。網路暫時不穩時自動重試（找不到檔案的 404 不重試）。"""
     req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 401, 403, 404) or attempt == retries:
+                raise
+        except Exception:
+            if attempt == retries:
+                raise
+        time.sleep(3 * (attempt + 1))
 
 
 def to_iso(dt: datetime) -> str:
