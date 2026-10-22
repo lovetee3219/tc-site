@@ -59,5 +59,15 @@ jobs:
         with:
           path: .
 
+      # 發布偶爾會因為「上一次發布還在進行中」而失敗，所以等 2 分鐘再試一次
       - id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: 等待後重試發布
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 120
+
+      - id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
