@@ -70,6 +70,7 @@
   input[type="range"] { width: 100%; accent-color: var(--accent); }
   .sharp-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 12.5px; color: var(--ink-soft); }
   .seg.seg2 { grid-template-columns: repeat(2, 1fr); width: 120px; }
+  .seg.seg-wide { width: 150px; }
   label.slider { display: block; font-size: 12.5px; color: var(--ink-soft); margin-top: 8px; }
 
   .storm-name { font-weight: 700; font-size: 14.5px; }
@@ -155,13 +156,19 @@
       <button data-sat="off" aria-pressed="false">關閉</button>
     </div>
     <label class="slider">透明度<input type="range" id="satOpacity" min="0.2" max="1" step="0.05" value="0.85"></label>
+    <div class="sharp-row">資料來源
+      <div class="seg seg2 seg-wide" role="group" aria-label="衛星資料來源">
+        <button data-src="gibs" aria-pressed="true">NASA</button>
+        <button data-src="jma" aria-pressed="false">氣象廳</button>
+      </div>
+    </div>
     <div class="sharp-row">放大後顯示
       <div class="seg seg2" role="group" aria-label="放大後的顯示方式">
         <button data-sharp="pixel" aria-pressed="true">像素</button>
         <button data-sharp="smooth" aria-pressed="false">平滑</button>
       </div>
     </div>
-    <p class="note">GOES 東／西與向日葵衛星，NASA GIBS 提供。紅外線與空氣團解析度約 2 公里，可見光約 1 公里（僅白天）。印度洋與非洲上空沒有涵蓋。</p>
+    <p class="note" id="satNote"></p>
   </section>
 
   <section class="group">
@@ -192,7 +199,13 @@ const CONFIG = {
   center: [20, 135], zoom: 4,
   frames: 12,          // 動畫張數
   stepMin: 20,         // 每張相隔幾分鐘
-  latencyMin: 60,      // GIBS 即時資料大約延遲多久才上線
+  latencyMin: 60,      // 查不到最新時間時，假設資料延遲幾分鐘
+  satSource: "gibs",   // 預設衛星來源："gibs"（NASA，較清晰）或 "jma"（氣象廳，較即時）
+  // 氣象廳向日葵全圓盤圖磚（僅涵蓋向日葵視野，最高縮放 5，約 4～5 公里一格）
+  jma: {
+    level: 5,
+    products: { ir: { label: "紅外線", path: "B13/TBB" }, airmass: { label: "水氣", path: "B08/TBB" }, vis: { label: "可見光", path: "B03/ALBD" } },
+  },
   // NASA GIBS 圖層名稱（可到 NASA Worldview 查更多）
   // 每顆衛星的星下點經度：畫面離衛星太遠時就不下載那顆衛星的圖，節省流量
   satLon: { "GOES-West": -137.2, "GOES-East": -75.2, "Himawari": 140.7 },
@@ -233,7 +246,7 @@ L.control.zoom({ position: "topright" }).addTo(map);
 
 // 只畫海陸邊界線（Natural Earth 1:5000 萬海岸線，公有領域資料）
 map.attributionControl.setPrefix(false).addAttribution(
-  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>' +
+  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a>' +
   ' · 路徑：<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://www.cwa.gov.tw/">中央氣象署</a>、JTWC、NCAR TCGP、' +
   'Based on data and products of <a href="https://www.ecmwf.int/">ECMWF</a> (CC BY 4.0)');
 map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
@@ -308,16 +321,63 @@ map.on("moveend", drawGrid);
 document.getElementById("gridToggle").addEventListener("change", drawGrid);
 
 /* ---------- 時間軸 ---------- */
-function latestTime() {
-  const t = new Date(Date.now() - CONFIG.latencyMin * 60000);
-  t.setUTCSeconds(0, 0);
-  t.setUTCMinutes(t.getUTCMinutes() - (t.getUTCMinutes() % 10));
-  return t;
+function floor10(t) {
+  const d = new Date(t);
+  d.setUTCSeconds(0, 0);
+  d.setUTCMinutes(d.getUTCMinutes() - (d.getUTCMinutes() % 10));
+  return d;
 }
-const t0 = latestTime();
-const times = Array.from({ length: CONFIG.frames }, (_, i) =>
+const makeTimes = t0 => Array.from({ length: CONFIG.frames }, (_, i) =>
   new Date(t0.getTime() - (CONFIG.frames - 1 - i) * CONFIG.stepMin * 60000));
+let times = makeTimes(floor10(Date.now() - CONFIG.latencyMin * 60000));
 const gibsTime = d => d.toISOString().slice(0, 19) + "Z";
+const jmaTime = d => d.toISOString().slice(0, 19).replace(/[-:T]/g, "");   // 20261022071000
+
+// 向 NASA GIBS 查詢某圖層目前最新的一張是幾點（DescribeDomains）
+async function latestGibs() {
+  const layer = CONFIG.sat[satMode === "off" ? "ir" : satMode].layers.find(n => n.startsWith("Himawari")) || CONFIG.sat.ir.layers[0];
+  const lvl = CONFIG.sat[satMode === "off" ? "ir" : satMode].level;
+  const end = new Date(), start = new Date(end - 2 * 86400000);
+  const url = `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/wmts.cgi?SERVICE=WMTS&REQUEST=DescribeDomains&VERSION=1.0.0` +
+    `&LAYER=${layer}&TILEMATRIXSET=GoogleMapsCompatible_Level${lvl}&TIME=${gibsTime(start)}/${gibsTime(end)}`;
+  const xml = await fetch(url).then(r => r.text());
+  const dom = [...xml.matchAll(/<Domain>([^<]*T[^<]*)<\/Domain>/g)].pop();
+  const last = dom[1].trim().split(",").pop().split("/");
+  return floor10(Date.parse(last[1] || last[0]));
+}
+// 氣象廳：先讀官方時間清單；讀不到時，逐一試載最近幾個時間的圖磚
+async function latestJma() {
+  try {
+    const list = await fetch("https://www.jma.go.jp/bosai/himawari/data/satimg/targetTimes_fd.json").then(r => r.json());
+    const v = list.map(x => x.validtime).sort().pop();
+    return new Date(Date.UTC(+v.slice(0, 4), +v.slice(4, 6) - 1, +v.slice(6, 8), +v.slice(8, 10), +v.slice(10, 12)));
+  } catch {
+    const now = floor10(Date.now());
+    for (let k = 1; k <= 9; k++) {
+      const t = new Date(now - k * 600000);
+      const ok = await new Promise(res => {
+        const img = new Image();
+        img.onload = () => res(true); img.onerror = () => res(false);
+        img.src = `https://www.jma.go.jp/bosai/himawari/data/satimg/${jmaTime(t)}/fd/${jmaTime(t)}/B13/TBB/2/3/1.jpg`;
+      });
+      if (ok) return t;
+    }
+    throw new Error("找不到氣象廳最新衛星圖");
+  }
+}
+// 更新時間軸到最新一張（播放中不更新，避免畫面跳動）
+async function refreshLatest() {
+  if (timer) return;
+  let t;
+  try { t = satSource === "jma" ? await latestJma() : await latestGibs(); }
+  catch { t = floor10(Date.now() - CONFIG.latencyMin * 60000); }
+  if (t.getTime() === times[times.length - 1].getTime()) return;
+  const atEnd = frame === CONFIG.frames - 1;
+  times = makeTimes(t);
+  if (atEnd) { frame = CONFIG.frames - 1; slider.value = frame; }
+  showClock(); buildSat(true);
+}
+setInterval(refreshLatest, 5 * 60000);   // 每 5 分鐘檢查一次有沒有新的衛星圖
 let frame = CONFIG.frames - 1;
 
 const slider = document.getElementById("timeSlider");
@@ -334,13 +394,15 @@ function showClock() {
 /* ---------- 衛星雲圖 ----------
    載入策略：平常只下載「目前這一張」；按下播放才下載其餘時間的圖。
    而且只下載畫面看得到的衛星（例如看西太平洋時不抓 GOES-East）。 */
-let satMode = "ir", satOpacity = 0.85, satGroups = [], satKey = "", timer = null;
+let satMode = "ir", satOpacity = 0.85, satGroups = [], satKey = "", timer = null, satSource = CONFIG.satSource;
+const satLevel = () => satSource === "jma" ? CONFIG.jma.level : CONFIG.sat[satMode].level;
 map.createPane("sat").style.zIndex = 250;
 
 function activeSatLayers() {
   if (satMode === "off") return [];
   const b = map.getBounds(), w = b.getWest(), e = b.getEast();
-  return CONFIG.sat[satMode].layers.filter(name => {
+  const names = satSource === "jma" ? ["Himawari_JMA"] : CONFIG.sat[satMode].layers;
+  return names.filter(name => {
     const sub = CONFIG.satLon[name.split("_")[0]];
     if (sub === undefined || e - w >= 300) return true;
     for (let lon = w; lon <= e + 5; lon += 5) {
@@ -351,11 +413,14 @@ function activeSatLayers() {
 }
 function satGroup(i) {
   if (!satGroups[i]) {
-    const { level } = CONFIG.sat[satMode];
-    satGroups[i] = L.layerGroup(activeSatLayers().map(name =>
-      L.tileLayer(`${GIBS}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
-        pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0, bounds: [[-85, -180], [85, 180]],
-      })));
+    const level = satLevel();
+    satGroups[i] = L.layerGroup(activeSatLayers().map(name => satSource === "jma"
+      ? L.tileLayer(`https://www.jma.go.jp/bosai/himawari/data/satimg/${jmaTime(times[i])}/fd/${jmaTime(times[i])}/${CONFIG.jma.products[satMode].path}/{z}/{x}/{y}.jpg`, {
+          pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0, bounds: [[-81, 60], [81, 222]],
+        })
+      : L.tileLayer(`${GIBS}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
+          pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0, bounds: [[-85, -180], [85, 180]],
+        })));
   }
   return satGroups[i];
 }
@@ -372,7 +437,7 @@ function pruneSat() {   // 沒在播放時，把其他時間的圖層拿掉，�
 // 「平滑」則讓瀏覽器內插，邊緣柔和但細節看起來較糊；兩者的資料解析度相同
 let sharpMode = "pixel";
 function updateSatSharpness() {
-  const lv = satMode === "off" ? 99 : CONFIG.sat[satMode].level;
+  const lv = satMode === "off" ? 99 : satLevel();
   map.getPane("sat").classList.toggle("pixelated", sharpMode === "pixel" && map.getZoom() > lv);
 }
 document.querySelectorAll("[data-sharp]").forEach(b => b.addEventListener("click", () => {
@@ -391,7 +456,7 @@ function showSatFrame() {
   whenLoaded(g, pruneSat);   // 新的一張載完才移除舊的，避免閃一下空白
 }
 function buildSat(force) {
-  const key = satMode + ":" + activeSatLayers().join(",");
+  const key = satSource + ":" + satMode + ":" + activeSatLayers().join(",") + ":" + gibsTime(times[0]);
   if (!force && key === satKey) return;
   satKey = key;
   satGroups.forEach(g => g && map.removeLayer(g));
@@ -406,6 +471,22 @@ document.querySelectorAll("[data-sat]").forEach(b => b.addEventListener("click",
   satMode = b.dataset.sat; buildSat(true);
 }));
 document.getElementById("satOpacity").addEventListener("input", e => { satOpacity = +e.target.value; showSatFrame(); });
+
+// 切換資料來源：按鈕文字、說明與時間軸都跟著換
+const SAT_NOTE = {
+  gibs: "NASA GIBS：GOES 東／西與向日葵衛星。紅外線約 2 公里、可見光約 1 公里，比較清晰，但通常比實際時間晚 30～60 分鐘。印度洋與非洲上空沒有涵蓋。",
+  jma: "日本氣象廳：只有向日葵衛星（西北太平洋與澳洲一帶）。通常只比實際時間晚 10～20 分鐘，但圖磚較粗，約 4～5 公里一格。",
+};
+function applySource() {
+  document.querySelectorAll("[data-src]").forEach(x => x.setAttribute("aria-pressed", x.dataset.src === satSource));
+  document.querySelector('[data-sat="airmass"]').textContent = satSource === "jma" ? CONFIG.jma.products.airmass.label : "空氣團";
+  document.getElementById("satNote").textContent = SAT_NOTE[satSource];
+}
+document.querySelectorAll("[data-src]").forEach(b => b.addEventListener("click", () => {
+  if (timer) playBtn.click();   // 播放中先停止
+  satSource = b.dataset.src; applySource(); buildSat(true); refreshLatest();
+}));
+applySource();
 
 /* ---------- 雷達（RainViewer 免費版：最高縮放 7、僅過去資料、個人／教育用途） ---------- */
 let radarFrames = [], radarLayer = null;
@@ -630,7 +711,7 @@ playBtn.addEventListener("click", () => {
 const panel = document.getElementById("panel"), tp = document.getElementById("togglePanel");
 tp.addEventListener("click", () => { const o = panel.classList.toggle("open"); tp.setAttribute("aria-expanded", o); tp.textContent = o ? "收起" : "圖層"; });
 
-showClock(); buildSat(true); drawGrid(); loadTracks();
+showClock(); buildSat(true); drawGrid(); loadTracks(); refreshLatest();
 </script>
 </body>
 </html>
