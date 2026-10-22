@@ -845,14 +845,23 @@ function drawObs() {
   });
 }
 async function loadObs() {
+  const note = document.getElementById("obsNote");
   try {
-    const d = await fetch("data/stations.json", { cache: "no-cache" }).then(r => r.json());
+    const d = await fetch("data/stations.json", { cache: "no-cache" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+    if (!(d.stations || []).length && obsData.length) throw 0;   // 新檔是空的：保留畫面上原本的資料
     obsData = d.stations || [];
-    const cwa = obsData.filter(o => o.src === "CWA").length, jma = obsData.length - cwa;
-    document.getElementById("obsNote").textContent = `中央氣象署 ${cwa} 站、日本氣象廳 ${jma} 站。畫面較擠時只顯示部分測站，放大可看到更多。`;
+    const parts = [["CWA", "中央氣象署"], ["JMA", "日本氣象廳"]].map(([src, label]) => {
+      const list = obsData.filter(o => o.src === src);
+      if (!list.length) return `${label}：目前沒有資料`;
+      const newest = Math.max(...list.map(o => Date.parse(o.time)));
+      const age = Math.round((Date.now() - newest) / 60000);
+      const hm = new Date(newest).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+      return `${label} ${list.length} 站（${hm} 觀測${age > 60 ? "，暫時無法更新" : ""}）`;
+    });
+    note.textContent = parts.join("；") + "。畫面較擠時只顯示部分測站，放大可看到更多。";
   } catch {
-    obsData = [];
-    document.getElementById("obsNote").textContent = "還沒有測站資料，等「更新測站」自動執行一次後就會出現。";
+    // 讀取失敗（例如網站剛好在發布新版本）：保留畫面上原本的資料，下次再試
+    if (!obsData.length) note.textContent = "還沒有測站資料，等「更新測站」自動執行一次後就會出現。";
   }
   drawObs();
   // 折線圖開著時，換成這一站的最新資料（滑鼠正停在圖上時先不換，免得數值框突然消失）
