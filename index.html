@@ -91,6 +91,8 @@
   .model-init { font-size: 12px; color: var(--ink-soft); font-family: var(--num); letter-spacing: .02em; }
   .model-init.stale { color: var(--warn); }
   .pixelated img { image-rendering: pixelated; }
+  .obs-icon { background: none; border: 0; }
+  .obs-icon svg { overflow: visible; display: block; }
   .grid-label { font-family: var(--num); font-size: 12px; font-weight: 500; color: rgba(255,255,255,.75); text-shadow: 0 0 3px #000; white-space: nowrap; }
   .intensity { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-top: 6px; }
   .intensity span { font-size: 11px; text-align: center; padding: 2px 0; border-radius: 3px; color: #10202c; }
@@ -193,6 +195,8 @@
     <label class="row"><input type="checkbox" id="radarToggle"> 雷達回波（RainViewer）</label>
     <label class="row"><input type="checkbox" id="sstToggle"> 海溫（GHRSST MUR，前一日）</label>
     <label class="row"><input type="checkbox" id="gridToggle" checked> 經緯線</label>
+    <label class="row"><input type="checkbox" id="obsToggle" checked> 測站風標（中央氣象署、日本氣象廳）</label>
+    <p class="note" id="obsNote"></p>
   </section>
 
   <section class="group" id="trackGroup">
@@ -737,6 +741,74 @@ playBtn.addEventListener("click", () => {
 /* ---------- 手機版面板開關 ---------- */
 const panel = document.getElementById("panel"), tp = document.getElementById("togglePanel");
 tp.addEventListener("click", () => { const o = panel.classList.toggle("open"); tp.setAttribute("aria-expanded", o); tp.textContent = o ? "收起" : "圖層"; });
+
+/* ---------- 地面測站風標 ----------
+   風標：桿子指向風「吹來」的方向；短羽 = 5 節、長羽 = 10 節、三角旗 = 50 節（國際慣例以節繪製）。
+   桿長約 22 像素，和左欄路徑圖例的線一樣長。畫面太擠時，每 36×36 像素只畫一站。 */
+const OBS = { staff: 22, spacing: 4, feather: 9, cell: 36 };
+map.createPane("obs").style.zIndex = 480;
+const obsLayer = L.layerGroup().addTo(map);
+let obsData = [];
+function barbSVG(ws, wd) {
+  const kt = Math.round((ws || 0) * 1.943844 / 5) * 5;
+  const halo = (d) => `<path d="${d}" stroke="#0b1620" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` +
+                      `<path d="${d}" stroke="#ffffff" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+  if (kt < 5 || wd === null || wd === undefined) {   // 靜風或幾乎無風：畫一個圈
+    return `<svg width="28" height="28" viewBox="-14 -14 28 28"><circle r="4.5" fill="none" stroke="#0b1620" stroke-width="3.2"/><circle r="4.5" fill="none" stroke="#fff" stroke-width="1.4"/><circle r="1.6" fill="#fff"/></svg>`;
+  }
+  // 以「風從正北吹來」畫，再整個旋轉到實際風向；羽毛畫在桿子右側（北半球慣例）
+  let d = `M0 0 L0 ${-OBS.staff}`, fill = "", y = -OBS.staff, left = kt;
+  while (left >= 50) { fill += `M0 ${y} L${OBS.feather} ${y + 2} L0 ${y + 5} Z `; y += 6; left -= 50; }
+  while (left >= 10) { d += ` M0 ${y} L${OBS.feather} ${y - 4}`; y += OBS.spacing; left -= 10; }
+  if (left >= 5) { if (y === -OBS.staff) y += OBS.spacing; d += ` M0 ${y} L${OBS.feather / 2} ${y - 2}`; }
+  const flag = fill ? `<path d="${fill}" fill="#fff" stroke="#0b1620" stroke-width="1"/>` : "";
+  return `<svg width="28" height="28" viewBox="-14 -14 28 28"><g transform="rotate(${wd})">${halo(d)}${flag}</g><circle r="2" fill="#fff" stroke="#0b1620" stroke-width="1"/></svg>`;
+}
+const fmtV = (v, unit, dig = 1) => v === null || v === undefined ? "—" : `${v.toFixed(dig)} ${unit}`;
+const DIR16 = ["北", "北北東", "東北", "東北東", "東", "東南東", "東南", "南南東", "南", "南南西", "西南", "西南西", "西", "西北西", "西北", "北北西"];
+function obsTip(o) {
+  const dir = o.wd === null || o.wd === undefined || (o.ws || 0) < 0.3 ? "靜風" : `${DIR16[Math.round(o.wd / 22.5) % 16]}風（${Math.round(o.wd)}°）`;
+  const t = new Date(o.time).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+  return `<b>${esc(o.name)}</b>　<span style="color:var(--ink-soft)">${o.src === "CWA" ? "中央氣象署" : "日本氣象廳"}</span><br>` +
+    `平均風速 ${fmtV(o.ws, "m/s")}　${dir}<br>瞬間風速 ${fmtV(o.gust, "m/s")}<br>` +
+    `氣壓（${o.pType}）${fmtV(o.p, "hPa")}<br><span style="color:var(--ink-soft)">觀測 ${t}（本地時間）</span>`;
+}
+function drawObs() {
+  obsLayer.clearLayers();
+  if (!document.getElementById("obsToggle").checked || !obsData.length) return;
+  const b = map.getBounds().pad(0.1), taken = new Set();
+  // 優先順序：中央氣象署 > 日本有人測站 > 其他 AMeDAS
+  const rank = o => o.src === "CWA" ? 0 : o.manned ? 1 : 2;
+  [...obsData].sort((a, c) => rank(a) - rank(c)).forEach(o => {
+    if (o.ws === null || o.ws === undefined) return;
+    for (const off of [0, -360, 360]) {
+      const ll = L.latLng(o.lat, o.lon + off);
+      if (!b.contains(ll)) continue;
+      const pt = map.latLngToContainerPoint(ll);
+      const cell = `${Math.floor(pt.x / OBS.cell)},${Math.floor(pt.y / OBS.cell)}`;
+      if (taken.has(cell)) continue;
+      taken.add(cell);
+      L.marker(ll, { pane: "obs", keyboard: false, icon: L.divIcon({ className: "obs-icon", html: barbSVG(o.ws, o.wd), iconSize: [28, 28], iconAnchor: [14, 14] }) })
+        .bindTooltip(obsTip(o), { className: "tc-tip", direction: "top", offset: [0, -6] }).addTo(obsLayer);
+    }
+  });
+}
+async function loadObs() {
+  try {
+    const d = await fetch("data/stations.json", { cache: "no-cache" }).then(r => r.json());
+    obsData = d.stations || [];
+    const cwa = obsData.filter(o => o.src === "CWA").length, jma = obsData.length - cwa;
+    document.getElementById("obsNote").textContent = `中央氣象署 ${cwa} 站、日本氣象廳 ${jma} 站。畫面較擠時只顯示部分測站，放大可看到更多。`;
+  } catch {
+    obsData = [];
+    document.getElementById("obsNote").textContent = "還沒有測站資料，等「更新測站」自動執行一次後就會出現。";
+  }
+  drawObs();
+}
+map.on("moveend", drawObs);
+document.getElementById("obsToggle").addEventListener("change", drawObs);
+setInterval(loadObs, 10 * 60000);   // 每 10 分鐘重新讀一次
+loadObs();
 
 /* ---------- 游標經緯度 ---------- */
 const coordVal = document.getElementById("coordVal");
