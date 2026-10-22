@@ -8,7 +8,6 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-velocity@2.1.4/dist/leaflet-velocity.min.css">
 <style>
   :root {
     --panel: rgba(244, 247, 249, .94);
@@ -71,7 +70,12 @@
   input[type="range"] { width: 100%; accent-color: var(--accent); }
   label.slider { display: block; font-size: 12.5px; color: var(--ink-soft); margin-top: 8px; }
 
-  .storm-name { font-weight: 700; font-size: 14.5px; margin: 4px 0 6px; }
+  .storm-name { font-weight: 700; font-size: 14.5px; }
+  .storm { border-top: 1px dashed var(--rule); padding: 6px 0 2px; }
+  .storm:first-child { border-top: 0; }
+  .storm-head { padding: 4px 0; }
+  .basin-tag { margin-left: auto; font-size: 12px; color: var(--ink-soft); border: 1px solid var(--rule); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .storm-body { padding-left: 24px; }
   .cat { font-size: 12.5px; color: var(--ink-soft); margin: 8px 0 2px; }
   .swatch { width: 22px; height: 0; border-top: 3px solid; flex: none; }
   .swatch.nwp { border-top-style: dashed; }
@@ -83,6 +87,7 @@
   .model-text { display: flex; flex-direction: column; line-height: 1.3; }
   .model-init { font-size: 12px; color: var(--ink-soft); font-family: var(--num); letter-spacing: .02em; }
   .model-init.stale { color: var(--warn); }
+  .pixelated img { image-rendering: pixelated; }
   .grid-label { font-family: var(--num); font-size: 12px; font-weight: 500; color: rgba(255,255,255,.75); text-shadow: 0 0 3px #000; white-space: nowrap; }
   .intensity { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 6px; }
   .intensity span { font-size: 11px; text-align: center; padding: 2px 0; border-radius: 3px; color: #10202c; }
@@ -148,16 +153,14 @@
       <button data-sat="off" aria-pressed="false">關閉</button>
     </div>
     <label class="slider">透明度<input type="range" id="satOpacity" min="0.2" max="1" step="0.05" value="0.85"></label>
-    <p class="note">GOES 東／西與向日葵衛星，NASA GIBS 提供。印度洋與非洲上空目前沒有涵蓋。</p>
+    <p class="note">GOES 東／西與向日葵衛星，NASA GIBS 提供。紅外線與空氣團解析度約 2 公里，可見光約 1 公里（僅白天）。印度洋與非洲上空沒有涵蓋。</p>
   </section>
 
   <section class="group">
     <h2>疊加圖層</h2>
     <label class="row"><input type="checkbox" id="radarToggle"> 雷達回波（RainViewer）</label>
     <label class="row"><input type="checkbox" id="sstToggle"> 海溫（GHRSST MUR，前一日）</label>
-    <label class="row"><input type="checkbox" id="windToggle"> 地面風場（GFS 10 公尺）</label>
     <label class="row"><input type="checkbox" id="gridToggle" checked> 經緯線</label>
-    <p class="note" id="windNote"></p>
   </section>
 
   <section class="group" id="trackGroup">
@@ -175,7 +178,6 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/leaflet-velocity@2.1.4/dist/leaflet-velocity.min.js"></script>
 <script>
 /* ===================== 設定區：想調整的東西大多在這裡 ===================== */
 const CONFIG = {
@@ -199,6 +201,7 @@ const CONFIG = {
     detailZoom: 5,     // 放大到這個等級以上，改用精細海岸線
   },
   grid: { color: "#ffffff", opacity: 0.35 },
+  defaultBasin: "WP",   // 一進網頁只先顯示這個海域的颱風（WP = 西北太平洋）
   // 路徑顏色：官方用白色實線，數值模式用冷色虛線，AI 模式用暖色點線
   palette: {
     official: ["#ffffff", "#ffe066"],
@@ -357,7 +360,15 @@ function pruneSat() {   // 沒在播放時，把其他時間的圖層拿掉，�
   if (timer) return;
   satGroups.forEach((g, i) => { if (g && i !== frame && map.hasLayer(g)) map.removeLayer(g); });
 }
+// 放大超過衛星原始解析度時，用「像素清晰」方式放大，不做模糊內插，看得出真實的雲頂細節
+function updateSatSharpness() {
+  const lv = satMode === "off" ? 99 : CONFIG.sat[satMode].level;
+  map.getPane("sat").classList.toggle("pixelated", map.getZoom() > lv);
+}
+map.on("zoomend", updateSatSharpness);
+
 function showSatFrame() {
+  updateSatSharpness();
   if (satMode === "off") return;
   const g = satGroup(frame);
   if (!map.hasLayer(g)) g.addTo(map);
@@ -411,26 +422,6 @@ document.getElementById("sstToggle").addEventListener("change", e => {
   const day = new Date(Date.now() - 36 * 3600000).toISOString().slice(0, 10);
   sstLayer = L.tileLayer(`${GIBS}/${CONFIG.sstLayer}/default/${day}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png`,
     { pane: "sst", maxNativeZoom: 7, maxZoom: 9, opacity: .75 }).addTo(map);
-});
-
-/* ---------- 風場 ---------- */
-let windLayer = null, windData = null;
-const windNote = document.getElementById("windNote");
-document.getElementById("windToggle").addEventListener("change", async e => {
-  if (windLayer) { map.removeLayer(windLayer); windLayer = null; }
-  if (!e.target.checked) { windNote.textContent = ""; return; }
-  try {
-    windData = windData || await fetch("data/wind.json", { cache: "no-cache" }).then(r => { if (!r.ok) throw 0; return r.json(); });
-  } catch {
-    windNote.textContent = "還沒有風場資料。GitHub Actions 第一次執行完成後就會出現。";
-    e.target.checked = false; return;
-  }
-  const ref = new Date(windData[0].header.refTime);
-  windNote.textContent = `GFS ${ref.toISOString().slice(5, 13).replace("T", " ")}Z 起報的分析場`;
-  windLayer = L.velocityLayer({
-    data: windData, maxVelocity: 30, velocityScale: 0.008, lineWidth: 1.3,
-    displayValues: true, displayOptions: { velocityType: "10 公尺風", position: "bottomright", emptyString: "無資料", speedUnit: "kt" },
-  }).addTo(map);
 });
 
 /* ---------- 路徑預報 ---------- */
@@ -487,6 +478,20 @@ function drawBest(storm) {
   return g;
 }
 
+const BASIN_NAME = { WP: "西北太平洋", EP: "東太平洋", CP: "中太平洋", AL: "大西洋", IO: "北印度洋", SH: "南半球" };
+const stormKeys = {};
+// 依勾選狀態把某個颱風的路徑加到地圖或移除：颱風總開關與個別路徑都勾選才顯示
+function syncStorm(sid) {
+  const box = document.getElementById("storms");
+  const head = [...box.querySelectorAll("[data-storm]")].find(x => x.dataset.storm === sid);
+  (stormKeys[sid] || []).forEach(k => {
+    const cb = [...box.querySelectorAll("[data-key]")].find(x => x.dataset.key === k);
+    const l = trackLayers[k];
+    if (!l) return;
+    if (head && head.checked && cb && cb.checked) l.addTo(map); else map.removeLayer(l);
+  });
+}
+
 async function loadTracks() {
   const box = document.getElementById("storms");
   let data;
@@ -498,13 +503,26 @@ async function loadTracks() {
 
   box.innerHTML = "";
   const CAT_NAME = { official: "官方預報", nwp: "數值模式", ai: "AI 模式" };
-  data.storms.forEach(storm => {
+  // 西北太平洋的颱風排前面，而且一進網頁只先顯示它們
+  const basinOf = st => (st.basin || st.id.slice(0, 2)).toUpperCase();
+  const storms = [...data.storms].sort((a, b) => (basinOf(a) !== CONFIG.defaultBasin) - (basinOf(b) !== CONFIG.defaultBasin));
+  storms.forEach(storm => { try {
+    const on = basinOf(storm) === CONFIG.defaultBasin;
+    const keys = stormKeys[storm.id] = [];
     const wrap = document.createElement("div");
-    wrap.innerHTML = `<div class="storm-name">${esc(storm.name)}</div>` + (storm.demo ? '<p class="note warn">這是虛構的示範路徑，接上真實資料來源後會自動替換。</p>' : "");
+    wrap.className = "storm";
+    wrap.innerHTML = `<label class="row storm-head"><input type="checkbox" ${on ? "checked" : ""} data-storm="${esc(storm.id)}">` +
+      `<span class="storm-name">${esc(storm.name)}</span><span class="basin-tag">${esc(BASIN_NAME[basinOf(storm)] || basinOf(storm))}</span></label>`;
+    const body = document.createElement("div");
+    body.className = "storm-body";
+    body.hidden = !on;
+    wrap.appendChild(body);
+    if (storm.demo) body.insertAdjacentHTML("beforeend", '<p class="note warn">這是虛構的示範路徑，接上真實資料來源後會自動替換。</p>');
     if (storm.best.length) {
       const bestKey = storm.id + ":best";
-      trackLayers[bestKey] = drawBest(storm).addTo(map);
-      wrap.insertAdjacentHTML("beforeend", `<label class="row"><input type="checkbox" checked data-key="${bestKey}"> 實測路徑</label>`);
+      trackLayers[bestKey] = drawBest(storm);
+      keys.push(bestKey);
+      body.insertAdjacentHTML("beforeend", `<label class="row"><input type="checkbox" checked data-key="${bestKey}"> 實測路徑</label>`);
     }
 
     const newest = Math.max(...storm.forecasts.map(f => Date.parse(f.init)));
@@ -514,14 +532,15 @@ async function loadTracks() {
       const rank = m => (ORDER.indexOf(m) + 1) || 99;
       const list = storm.forecasts.filter(f => f.category === cat).sort((a, b) => rank(a.model) - rank(b.model));
       if (!list.length) return;
-      wrap.insertAdjacentHTML("beforeend", `<div class="cat">${CAT_NAME[cat]}</div>`);
+      body.insertAdjacentHTML("beforeend", `<div class="cat">${CAT_NAME[cat]}</div>`);
       list.forEach((f, i) => {
         const color = CONFIG.modelColors[f.model] || CONFIG.palette[cat][i % CONFIG.palette[cat].length];
         f.tauLabels = cat === "official" && i === 0;   // 只在第一條官方路徑標 24h、48h…，避免文字重疊
         const key = `${storm.id}:${f.model}`;
         const stale = newest - Date.parse(f.init) >= 12 * 3600000;   // 比最新的預報早 12 小時以上
-        trackLayers[key] = drawForecast(f, color).addTo(map);
-        wrap.insertAdjacentHTML("beforeend",
+        trackLayers[key] = drawForecast(f, color);
+        keys.push(key);
+        body.insertAdjacentHTML("beforeend",
           `<label class="row model"><input type="checkbox" checked data-key="${key}"><span class="swatch ${cat}" style="border-top-color:${color}"></span>` +
           `<span class="model-text">${esc(f.label)}<span class="model-init${stale ? " stale" : ""}">${fmtInit(f.init)}${stale ? "（較舊）" : ""}</span></span>` +
           `<span class="model-code">${esc(f.model)}</span></label>`);
@@ -532,7 +551,7 @@ async function loadTracks() {
     const ens = {};
     storm.forecasts.filter(f => f.category === "ens").forEach(f => (ens[f.group] ||= []).push(f));
     const groups = Object.keys(ens);
-    if (groups.length) wrap.insertAdjacentHTML("beforeend", `<div class="cat">系集成員</div>`);
+    if (groups.length) body.insertAdjacentHTML("beforeend", `<div class="cat">系集成員</div>`);
     groups.forEach((name, i) => {
       const color = CONFIG.groupColors[name] || CONFIG.palette.ens[i % CONFIG.palette.ens.length];
       const key = `${storm.id}:ens:${name}`;
@@ -540,20 +559,30 @@ async function loadTracks() {
       ens[name].forEach(f => L.polyline(unwrap(f.points), { pane: "tracks", color, weight: 1, opacity: 0.55 })
         .bindTooltip(`<b>${esc(f.model)}</b>　${fmtInit(f.init)}`, { className: "tc-tip", sticky: true }).addTo(g));
       trackLayers[key] = g;
+      keys.push(key);
       const init = ens[name].map(f => f.init).sort().pop();
-      wrap.insertAdjacentHTML("beforeend",
+      body.insertAdjacentHTML("beforeend",
         `<label class="row model"><input type="checkbox" data-key="${key}"><span class="swatch" style="border-top:1.5px solid ${color}"></span>` +
         `<span class="model-text">${esc(name)}<span class="model-init">${ens[name].length} 條・${fmtInit(init)}</span></span></label>`);
     });
     box.appendChild(wrap);
-
-  });
+    if (on) syncStorm(storm.id);
+  } catch (err) {   // 某個颱風的資料有問題時，顯示錯誤訊息，不影響其他颱風
+    console.error(err);
+    box.insertAdjacentHTML("beforeend", `<p class="note warn">顯示 ${esc(storm.id)} 時出錯：${esc(err.message)}</p>`);
+  } });
   // 把畫面移到所有颱風路徑的範圍
   const all = L.featureGroup(Object.values(trackLayers).filter(g => map.hasLayer(g)).flatMap(g => g.getLayers()));
   if (all.getLayers().length) map.fitBounds(all.getBounds(), { paddingTopLeft: [innerWidth > 720 ? 330 : 20, 20], paddingBottomRight: [20, 90] });
   box.addEventListener("change", e => {
-    const l = trackLayers[e.target.dataset.key];
-    if (l) e.target.checked ? l.addTo(map) : map.removeLayer(l);
+    const sid = e.target.dataset.storm;
+    if (sid !== undefined) {   // 颱風的總開關：收合／展開，並一次開關它所有的路徑
+      e.target.closest(".storm").querySelector(".storm-body").hidden = !e.target.checked;
+      syncStorm(sid);
+      return;
+    }
+    const wrap = e.target.closest(".storm");
+    if (wrap) syncStorm(wrap.querySelector("[data-storm]").dataset.storm);
   });
 }
 
