@@ -7,12 +7,17 @@ ATCF 是美國 NHC／JTWC 使用、也被許多研究單位採用的標準文字
   BASIN, CY, YYYYMMDDHH, TECHNUM, TECH, TAU, LAT, LON, VMAX, MSLP, ...
 例：WP, 25, 2026102000, 03, AVNO, 24, 215N, 1302E, 95, 955, TY, ...
 
+另外會合併以下官方與模式來源（各自寫在 src_*.py）：
+  JTWC（src_jtwc.py）、JMA（src_jma.py）、CWA（src_cwa.py，需授權碼）、ECMWF（src_ecmwf.py）
+任何一個來源失敗都不影響其他來源。
+
 使用方式：
-  python scripts/fetch_tracks.py            # 依 SOURCES 下載
+  python scripts/fetch_tracks.py            # 依 SOURCES 下載，並合併各官方來源
   python scripts/fetch_tracks.py --demo     # 產生示範資料（不需網路）
 """
 import gzip
 import json
+import math
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -184,6 +189,11 @@ def build_storm(src):
             text = fetch_text(src["adeck"])
             auto_name = auto_name or find_name(text)
             runs = parse_atcf(text)
+            # CARQ = 作業單位每次的即時定位；b-deck 抓不到時，用它當實測路徑
+            carq = sorted((init, pts[0]) for (tech, init), pts in runs.items() if tech == "CARQ" and pts and pts[0]["tau"] == 0)
+            if carq and not storm["best"]:
+                storm["best"] = [{k: v for k, v in p.items() if k != "tau"} | {"time": iso(init)} for init, p in carq]
+                print(f"  b-deck 沒有資料，改用 CARQ 即時定位：{len(carq)} 個點")
             found = sorted({tech for tech, _ in runs})
             print("  a-deck 內的模式代碼：", " ".join(found))
             for tech, (init, pts) in latest_runs(runs).items():
@@ -202,7 +212,67 @@ def build_storm(src):
     if auto_name:  # 自動抓到的名稱優先，例如「Champi（WP29）」
         storm["name"] = f"{auto_name}（{src['storm'][:4]}）"
     print("  名稱：", storm["name"])
+    set_current(storm)
     return storm
+
+
+def set_current(storm):
+    """記下颱風目前位置，用來把其他來源（JMA、CWA 等）對應到同一個颱風。"""
+    if storm["best"]:
+        p = storm["best"][-1]
+        storm["current"] = {"lat": p["lat"], "lon": p["lon"], "time": p["time"]}
+    elif storm["forecasts"]:
+        f = max(storm["forecasts"], key=lambda f: f["init"])
+        storm["current"] = {"lat": f["points"][0]["lat"], "lon": f["points"][0]["lon"], "time": f["init"]}
+
+
+def distance_deg(a, b):
+    dlon = (a["lon"] - b["lon"] + 540) % 360 - 180
+    return math.hypot(a["lat"] - b["lat"], dlon * math.cos(math.radians(a["lat"])))
+
+
+def attach(storms, it):
+    """把一筆外部來源的預報併入對應的颱風；找不到就新增一個。"""
+    target = None
+    if it["number"]:
+        basin, num = it["number"]
+        target = next((s for s in storms if s["id"][:2] == basin and s["id"][2:4].isdigit() and int(s["id"][2:4]) == num), None)
+    if target is None:
+        near = [(distance_deg(s["current"], it), s) for s in storms if s.get("current")]
+        near = [x for x in near if x[0] < 5]   # 5 度以內視為同一個颱風
+        if near:
+            target = min(near, key=lambda x: x[0])[1]
+    if target is None:
+        sid = f"{it['number'][0]}{it['number'][1]:02d}" if it["number"] else f"{it['source']}-{len(storms) + 1}"
+        target = {"id": sid, "name": it["name"] or sid, "best": [], "forecasts": [],
+                  "current": {"lat": it["lat"], "lon": it["lon"], "time": it["time"]}}
+        storms.append(target)
+    codes = {f["model"] for f in it["forecasts"]}
+    target["forecasts"] = [f for f in target["forecasts"] if f["model"] not in codes] + it["forecasts"]
+    if not target["best"] and it["best"]:
+        target["best"] = it["best"]
+        set_current(target)
+    if it["name"] and target["name"] == target["id"]:
+        target["name"] = it["name"]
+    return target
+
+
+def merge_official(storms):
+    """依序抓取各來源。單一來源失敗只會印出訊息，不影響其他來源。"""
+    import src_cwa
+    import src_ecmwf
+    import src_jma
+    import src_jtwc
+    tasks = [("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms])),
+             ("ECMWF", src_ecmwf.fetch), ("JMA", src_jma.fetch), ("CWA", src_cwa.fetch)]
+    for name, fn in tasks:
+        print("處理", name)
+        try:
+            for it in fn():
+                t = attach(storms, it)
+                print(f"  → 併入 {t['id']}")
+        except Exception as e:
+            print(f"  {name} 失敗：", e)
 
 
 def demo():
@@ -233,16 +303,19 @@ def demo():
 
 
 def main():
-    if "--demo" in sys.argv or not SOURCES:
-        storms = demo()
-        print("SOURCES 為空或指定 --demo，輸出示範資料。")
-    else:
-        storms = []
+    storms = []
+    if "--demo" not in sys.argv:
         for src in SOURCES:
             print("處理", src["storm"])
             storm = build_storm(src)
             if storm["best"] or storm["forecasts"]:
                 storms.append(storm)
+        merge_official(storms)
+    if not storms:
+        storms = demo()
+        print("沒有任何颱風資料，輸出示範資料。")
+    for s in storms:
+        s.pop("current", None)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     payload = {"updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "storms": storms}
     OUT.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
