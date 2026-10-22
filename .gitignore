@@ -1,2 +1,4 @@
-data/stations.json
-__pycache__/
+   data/stations.json
+   data/history/
+   .cache/
+   __pycache__/
