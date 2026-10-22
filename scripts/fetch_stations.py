@@ -21,6 +21,8 @@ OUT = ROOT / "data" / "stations.json"
 # 過去觀測的累積檔：靠 GitHub Actions 的快取在每次執行之間保存（不存進儲存庫）
 STORE = ROOT / ".cache" / "stations_history.json"
 HIST_DIR = ROOT / "data" / "history"   # 每站一個小檔，網頁點測站時才下載
+# 累積檔也隨網站發布一份。萬一 GitHub 的快取沒讀到，就從網站上把它拿回來接著累積
+PUBLIC_STORE = ROOT / "data" / "history_store.json"
 KEEP_HOURS = 24
 JMA = "https://www.jma.go.jp/bosai/amedas/"
 GUST_RADIUS_KM = 700     # 颱風中心多遠以內的 AMeDAS 測站要另外抓瞬間風速
@@ -145,12 +147,40 @@ def fetch_jma():
     return out
 
 
-def save_history(stations):
-    """把這次的觀測加進累積檔，刪掉超過 24 小時的，再為每站寫出一個小檔。"""
+def site_url():
+    """網站網址：可用環境變數 SITE_URL 指定；沒指定就依 GitHub 儲存庫名稱推算。"""
+    if os.environ.get("SITE_URL"):
+        return os.environ["SITE_URL"].rstrip("/") + "/"
+    repo = os.environ.get("GITHUB_REPOSITORY", "")   # 例如 yourname/tc-site
+    if "/" not in repo:
+        return None
+    owner, name = repo.split("/", 1)
+    if name.lower() == f"{owner.lower()}.github.io":
+        return f"https://{owner.lower()}.github.io/"
+    return f"https://{owner.lower()}.github.io/{name}/"
+
+
+def load_store():
     try:
         store = json.loads(STORE.read_text())
+        print(f"歷史資料：從 GitHub 快取讀到 {len(store)} 站")
+        return store
     except Exception:
-        store = {}
+        pass
+    url = site_url()
+    if url:
+        try:
+            store = json.loads(http_get(url + "data/history_store.json", timeout=60))
+            print(f"歷史資料：快取沒有資料，改從網站取回 {len(store)} 站")
+            return store
+        except Exception as e:
+            print("歷史資料：快取與網站都沒有舊資料，從頭開始累積（", e, "）")
+    return {}
+
+
+def save_history(stations):
+    """把這次的觀測加進累積檔，刪掉超過 24 小時的，再為每站寫出一個小檔。"""
+    store = load_store()
     now_min = int(datetime.now(timezone.utc).timestamp() // 60)
     cutoff = now_min - KEEP_HOURS * 60
     for st in stations:
@@ -162,6 +192,7 @@ def save_history(stations):
     store = {k: v for k, v in store.items() if v and v[-1][0] >= cutoff}
     STORE.parent.mkdir(parents=True, exist_ok=True)
     STORE.write_text(json.dumps(store, separators=(",", ":")))
+    PUBLIC_STORE.write_text(STORE.read_text())
     HIST_DIR.mkdir(parents=True, exist_ok=True)
     for key, rows in store.items():
         cols = list(zip(*rows))
