@@ -98,6 +98,16 @@
   .toggle-panel { display: none; }
 
   /* 底部時間列：整個網站最醒目的元素 */
+  /* 左下角：滑鼠所在位置的經緯度，與底部時間列等高對齊 */
+  .coords {
+    position: fixed; z-index: 1000; left: 12px; width: 300px; height: 60px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    background: var(--panel); backdrop-filter: blur(8px); border-radius: 10px; box-shadow: var(--shadow);
+    display: flex; align-items: center; gap: 14px; padding: 0 16px;
+  }
+  .coords .lbl { font-size: 12.5px; color: var(--ink-soft); line-height: 1.3; }
+  .coords .val { font-family: var(--num); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .01em; white-space: nowrap; }
+  .coords .val.idle { color: var(--ink-soft); font-weight: 500; font-family: var(--sans); font-size: 15px; }
   .timebar {
     position: fixed; z-index: 1000; left: 324px; right: 12px;
     bottom: calc(12px + env(safe-area-inset-bottom, 0px));
@@ -123,6 +133,8 @@
   .leaflet-control-attribution { font-size: 10.5px; }
 
   @media (max-width: 720px) {
+    .coords { top: calc(12px + env(safe-area-inset-top, 0px)); bottom: auto; left: 8px; width: auto; height: 38px; padding: 0 12px; gap: 8px; }
+    .coords .val { font-size: 16px; }
     .panel { top: auto; left: 0; right: 0; width: auto; bottom: calc(76px + env(safe-area-inset-bottom, 0px));
              max-height: 55%; border-radius: 12px 12px 0 0; transform: translateY(calc(100% + 80px)); transition: transform .25s; }
     .panel.open { transform: none; }
@@ -185,6 +197,11 @@
     <div class="intensity" id="intensityLegend"></div>
   </section>
 </aside>
+
+<div class="coords">
+  <span class="lbl">游標<br>位置</span>
+  <span class="val idle" id="coordVal">移到地圖上</span>
+</div>
 
 <div class="timebar" role="group" aria-label="衛星時間">
   <button class="play" id="play" aria-label="播放動畫">▶</button>
@@ -710,6 +727,18 @@ playBtn.addEventListener("click", () => {
 /* ---------- 手機版面板開關 ---------- */
 const panel = document.getElementById("panel"), tp = document.getElementById("togglePanel");
 tp.addEventListener("click", () => { const o = panel.classList.toggle("open"); tp.setAttribute("aria-expanded", o); tp.textContent = o ? "收起" : "圖層"; });
+
+/* ---------- 游標經緯度 ---------- */
+const coordVal = document.getElementById("coordVal");
+function showCoords(ll) {
+  const lat = ll.lat, lon = ((ll.lng + 180) % 360 + 360) % 360 - 180;   // 經度換回 -180～180
+  const f = (v, pos, neg) => `${Math.abs(v).toFixed(2)}°${v >= 0 ? pos : neg}`;
+  coordVal.textContent = `${f(lat, "N", "S")}  ${f(lon, "E", "W")}`;
+  coordVal.classList.remove("idle");
+}
+map.on("mousemove", e => showCoords(e.latlng));
+map.on("click", e => showCoords(e.latlng));   // 手機沒有滑鼠，點一下地圖也會顯示
+map.on("mouseout", () => { coordVal.textContent = "移到地圖上"; coordVal.classList.add("idle"); });
 
 showClock(); buildSat(true); drawGrid(); loadTracks(); refreshLatest();
 </script>
