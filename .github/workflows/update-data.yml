@@ -52,6 +52,12 @@ jobs:
           git pull --rebase --autostash || true
           git push
 
+      - name: 下載測站觀測（不存進儲存庫，只隨網站發布）
+        run: python scripts/fetch_stations.py
+        env:
+          CWA_API_KEY: ${{ secrets.CWA_API_KEY }}
+        continue-on-error: true
+
       # ↓ 直接把網站發布出去，不必等 GitHub 另外觸發
       - uses: actions/configure-pages@v5
 

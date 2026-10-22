@@ -1,0 +1,54 @@
+# 每 20 分鐘更新一次地面測站的風速觀測，並重新發布網站。
+# 測站資料不存進儲存庫（避免儲存庫越長越大），只隨網站一起發布。
+name: 更新測站
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 和「更新資料」共用同一個佇列，兩者不會同時發布網站而互相衝突
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  stations:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 下載測站觀測
+        run: python scripts/fetch_stations.py
+        env:
+          CWA_API_KEY: ${{ secrets.CWA_API_KEY }}
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: 等待後重試發布
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 120
+
+      - id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
+        uses: actions/deploy-pages@v4
