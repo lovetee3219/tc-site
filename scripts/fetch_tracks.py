@@ -50,30 +50,18 @@ SOURCES = [
 # category: official（官方）、nwp（數值模式）、ai（AI 模式）
 # 代碼會隨年度增減，請以資料來源當季的說明為準；不在表內的代碼會被略過。
 MODELS = {
+    # 官方預報
     "OFCL": ("NHC 官方", "official"),
     "JTWC": ("JTWC 官方", "official"),
     "RJTD": ("JMA 官方", "official"),
     "RCTP": ("CWA 官方", "official"),
-    "VHHH": ("香港天文台", "official"),
+    # GFS（單一預報另由 src_gfs.py 補上）
     "AVNO": ("GFS", "nwp"),
-    "AVNI": ("GFS（插值）", "nwp"),
-    "EMX":  ("ECMWF IFS", "nwp"),
-    "EMXI": ("ECMWF IFS（插值）", "nwp"),
-    "ECMF": ("ECMWF IFS", "nwp"),
-    "EGRR": ("UKMET", "nwp"),
-    "UKM":  ("UKMET", "nwp"),
-    "CMC":  ("加拿大 GDPS", "nwp"),
-    "NVGM": ("美國海軍 NAVGEM", "nwp"),
-    "HAFA": ("HAFS-A", "nwp"),
-    "HAFB": ("HAFS-B", "nwp"),
     "AEMN": ("GEFS 系集平均", "nwp"),
-    "CEMN": ("加拿大 GEPS 系集平均", "nwp"),
-    "NEMN": ("美國海軍系集平均", "nwp"),
+    # ECMWF
+    "EMX":  ("ECMWF IFS", "nwp"),
+    "ECMF": ("ECMWF IFS", "nwp"),
     "EEMN": ("ECMWF 系集平均", "nwp"),
-    "NGX":  ("美國海軍全球模式", "nwp"),
-    # AI 模式的 ATCF 代碼尚未統一，以下為佔位，請依資料來源實際使用的代碼修改
-    "AIFS": ("ECMWF AIFS", "ai"),
-    "GDMI": ("Google DeepMind", "ai"),
 }
 
 
@@ -81,8 +69,6 @@ MODELS = {
 # 例：AP01~AP30 是 GEFS 的 30 個成員，AC00 是控制組。
 ENSEMBLES = {
     "AP": "GEFS 系集成員", "AC": "GEFS 系集成員",
-    "CP": "加拿大 GEPS 成員", "CC": "加拿大 GEPS 成員",
-    "NP": "美國海軍系集成員", "NC": "美國海軍系集成員",
     "EP": "ECMWF 系集成員", "EC": "ECMWF 系集成員",
 }
 
@@ -172,7 +158,7 @@ def iso(yyyymmddhh: str) -> str:
 
 def build_storm(src):
     """a-deck 與 b-deck 分開處理：其中一個抓不到，另一個仍會顯示。"""
-    storm = {"id": src["storm"], "name": src.get("name") or src["storm"], "best": [], "forecasts": []}
+    storm = {"id": src["storm"], "basin": src["storm"][:2].upper(), "name": src.get("name") or src["storm"], "best": [], "forecasts": []}
     auto_name = None
     if src.get("bdeck"):
         try:
@@ -231,8 +217,8 @@ def distance_deg(a, b):
     return math.hypot(a["lat"] - b["lat"], dlon * math.cos(math.radians(a["lat"])))
 
 
-def attach(storms, it):
-    """把一筆外部來源的預報併入對應的颱風；找不到就新增一個。"""
+def attach(storms, it, create=True):
+    """把一筆外部來源的預報併入對應的颱風；找不到時，create=True 才新增，否則略過。"""
     target = None
     if it["number"]:
         basin, num = it["number"]
@@ -242,9 +228,13 @@ def attach(storms, it):
         near = [x for x in near if x[0] < 5]   # 5 度以內視為同一個颱風
         if near:
             target = min(near, key=lambda x: x[0])[1]
+    if target is None and not create:
+        return None
     if target is None:
         sid = f"{it['number'][0]}{it['number'][1]:02d}" if it["number"] else f"{it['source']}-{len(storms) + 1}"
-        target = {"id": sid, "name": it["name"] or sid, "best": [], "forecasts": [],
+        # 沒有 JTWC 編號的只會來自 JMA、CWA，都是西北太平洋
+        basin = it["number"][0] if it["number"] else "WP"
+        target = {"id": sid, "basin": basin, "name": it["name"] or sid, "best": [], "forecasts": [],
                   "current": {"lat": it["lat"], "lon": it["lon"], "time": it["time"]}}
         storms.append(target)
     codes = {f["model"] for f in it["forecasts"]}
@@ -261,16 +251,21 @@ def merge_official(storms):
     """依序抓取各來源。單一來源失敗只會印出訊息，不影響其他來源。"""
     import src_cwa
     import src_ecmwf
+    import src_gfs
     import src_jma
     import src_jtwc
-    tasks = [("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms])),
-             ("ECMWF", src_ecmwf.fetch), ("JMA", src_jma.fetch), ("CWA", src_cwa.fetch)]
-    for name, fn in tasks:
+    # 第三個值：找不到對應颱風時要不要新增一個。全部設為 True，所以其他海域的颱風也會讀進來；
+    # 網站一開始只顯示西北太平洋，其他海域可在左欄勾選。
+    tasks = [("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms]), True),
+             ("JMA", src_jma.fetch, True), ("CWA", src_cwa.fetch, True),
+             ("GFS", src_gfs.fetch, True), ("ECMWF", src_ecmwf.fetch, True)]
+    for name, fn, create in tasks:
         print("處理", name)
         try:
             for it in fn():
-                t = attach(storms, it)
-                print(f"  → 併入 {t['id']}")
+                t = attach(storms, it, create)
+                if t:
+                    print(f"  → 併入 {t['id']}")
         except Exception as e:
             print(f"  {name} 失敗：", e)
 
@@ -286,8 +281,7 @@ def demo():
                      "lat": round(17.0 + 0.5 * k, 1), "lon": round(134.0 - 0.9 * k, 1),
                      "vmax": 45 + 10 * k, "mslp": 995 - 8 * k})
     lat0, lon0 = best[-1]["lat"], best[-1]["lon"]
-    spread = {"JTWC": (1.0, 1.5), "AVNO": (1.3, 1.2), "EMX": (0.8, 1.7), "EGRR": (0.9, 1.6),
-              "HAFA": (1.15, 1.4), "AIFS": (0.95, 1.6), "GDMI": (1.05, 1.55)}
+    spread = {"JTWC": (1.0, 1.5), "AVNO": (1.3, 1.2), "ECMF": (0.8, 1.7), "AEMN": (1.15, 1.4), "EEMN": (0.9, 1.6)}
     fc = []
     for tech, (dn, dw) in spread.items():
         label, cat = MODELS[tech]
@@ -299,7 +293,7 @@ def demo():
                         "lon": round(lon0 - dw * s + 0.03 * s * s, 1),
                         "vmax": max(30, int(105 + 5 * s - 3 * s * s)), "mslp": None})
         fc.append({"model": tech, "label": label, "category": cat, "init": best[-1]["time"], "points": pts})
-    return [{"id": "WP992026", "name": "示範颱風（虛構資料）", "demo": True, "best": best, "forecasts": fc}]
+    return [{"id": "WP992026", "basin": "WP", "name": "示範颱風（虛構資料）", "demo": True, "best": best, "forecasts": fc}]
 
 
 def main():
