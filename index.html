@@ -204,6 +204,7 @@ const CONFIG = {
     official: ["#ffffff", "#ffe066"],
     nwp: ["#4cc9f0", "#4895ef", "#80ed99", "#56cfe1", "#a0c4ff", "#72efdd", "#b8f2e6"],
     ai: ["#ff70a6", "#ff9770", "#ffd670", "#e980fc"],
+    ens: ["#8fd3ff", "#b5f5c4", "#d4c2ff", "#ffd1a8"],   // 系集成員：細線、半透明
   },
 };
 /* ======================================================================== */
@@ -513,11 +514,29 @@ async function loadTracks() {
           `<span class="model-code">${esc(f.model)}</span></label>`);
       });
     });
+
+    // 系集成員：每個系集一個勾選框，預設不顯示（線很多）
+    const ens = {};
+    storm.forecasts.filter(f => f.category === "ens").forEach(f => (ens[f.group] ||= []).push(f));
+    const groups = Object.keys(ens);
+    if (groups.length) wrap.insertAdjacentHTML("beforeend", `<div class="cat">系集成員</div>`);
+    groups.forEach((name, i) => {
+      const color = CONFIG.palette.ens[i % CONFIG.palette.ens.length];
+      const key = `${storm.id}:ens:${name}`;
+      const g = L.layerGroup();
+      ens[name].forEach(f => L.polyline(unwrap(f.points), { pane: "tracks", color, weight: 1, opacity: 0.55 })
+        .bindTooltip(`<b>${esc(f.model)}</b>　${fmtInit(f.init)}`, { className: "tc-tip", sticky: true }).addTo(g));
+      trackLayers[key] = g;
+      const init = ens[name].map(f => f.init).sort().pop();
+      wrap.insertAdjacentHTML("beforeend",
+        `<label class="row model"><input type="checkbox" data-key="${key}"><span class="swatch" style="border-top:1.5px solid ${color}"></span>` +
+        `<span class="model-text">${esc(name)}<span class="model-init">${ens[name].length} 條・${fmtInit(init)}</span></span></label>`);
+    });
     box.appendChild(wrap);
 
   });
   // 把畫面移到所有颱風路徑的範圍
-  const all = L.featureGroup(Object.values(trackLayers).flatMap(g => g.getLayers()));
+  const all = L.featureGroup(Object.values(trackLayers).filter(g => map.hasLayer(g)).flatMap(g => g.getLayers()));
   if (all.getLayers().length) map.fitBounds(all.getBounds(), { paddingTopLeft: [innerWidth > 720 ? 330 : 20, 20], paddingBottomRight: [20, 90] });
   box.addEventListener("change", e => {
     const l = trackLayers[e.target.dataset.key];
