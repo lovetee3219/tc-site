@@ -1,4 +1,5 @@
    data/stations.json
    data/history/
+   data/history_store.json
    .cache/
    __pycache__/
