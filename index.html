@@ -920,6 +920,15 @@ async function openChart(o) {
         yw: { position: "left", beginAtZero: true, title: { display: true, text: "風速 m/s", color: soft },
               ticks: { color: soft }, grid: { color: rule } },
         yp: { position: "right", title: { display: true, text: "氣壓 hPa", color: soft },
+              // 上下界至少相差 5 hPa（取整數），避免氣壓幾乎不變時，微小起伏被放大成劇烈變化
+              afterDataLimits: axis => {
+                const lo = axis.min, hi = axis.max, minSpan = 5;
+                if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
+                if (hi - lo < minSpan) {
+                  axis.min = Math.floor(lo - (minSpan - (hi - lo)) / 2);
+                  axis.max = Math.max(axis.min + minSpan, Math.ceil(hi));
+                }
+              },
               ticks: { color: soft }, grid: { drawOnChartArea: false } },
       },
     },
