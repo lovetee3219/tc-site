@@ -18,6 +18,10 @@ from src_common import http_get, to_iso
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "stations.json"
+# 過去觀測的累積檔：靠 GitHub Actions 的快取在每次執行之間保存（不存進儲存庫）
+STORE = ROOT / ".cache" / "stations_history.json"
+HIST_DIR = ROOT / "data" / "history"   # 每站一個小檔，網頁點測站時才下載
+KEEP_HOURS = 24
 JMA = "https://www.jma.go.jp/bosai/amedas/"
 GUST_RADIUS_KM = 700     # 颱風中心多遠以內的 AMeDAS 測站要另外抓瞬間風速
 GUST_MAX_STATIONS = 300  # 最多抓幾站，避免對氣象廳發出太多請求
@@ -141,6 +145,32 @@ def fetch_jma():
     return out
 
 
+def save_history(stations):
+    """把這次的觀測加進累積檔，刪掉超過 24 小時的，再為每站寫出一個小檔。"""
+    try:
+        store = json.loads(STORE.read_text())
+    except Exception:
+        store = {}
+    now_min = int(datetime.now(timezone.utc).timestamp() // 60)
+    cutoff = now_min - KEEP_HOURS * 60
+    for st in stations:
+        key = f"{st['src']}_{st['id']}"
+        t = int(datetime.fromisoformat(st["time"].replace("Z", "+00:00")).timestamp() // 60)
+        rows = [r for r in store.get(key, []) if r[0] >= cutoff and r[0] != t]
+        rows.append([t, st["ws"], st["gust"], st["p"]])
+        store[key] = sorted(rows)
+    store = {k: v for k, v in store.items() if v and v[-1][0] >= cutoff}
+    STORE.parent.mkdir(parents=True, exist_ok=True)
+    STORE.write_text(json.dumps(store, separators=(",", ":")))
+    HIST_DIR.mkdir(parents=True, exist_ok=True)
+    for key, rows in store.items():
+        cols = list(zip(*rows))
+        (HIST_DIR / f"{key}.json").write_text(json.dumps(
+            {"t": cols[0], "ws": cols[1], "gust": cols[2], "p": cols[3]}, separators=(",", ":")))
+    longest = max((len(v) for v in store.values()), default=0)
+    print(f"歷史資料：{len(store)} 站，最多累積 {longest} 筆")
+
+
 def main():
     stations = []
     for name, fn in (("CWA", fetch_cwa), ("JMA", fetch_jma)):
@@ -152,6 +182,7 @@ def main():
     OUT.write_text(json.dumps({"updated": to_iso(datetime.now(timezone.utc)), "stations": stations},
                               ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print("已寫入", OUT, f"（共 {len(stations)} 站）")
+    save_history(stations)
 
 
 if __name__ == "__main__":
