@@ -82,6 +82,7 @@ jobs:
         if: steps.stations.outcome == 'failure'
         run: |
           python -c "import sys; sys.path.insert(0, 'scripts'); import fetch_stations as f; u = f.site_url(); open('data/stations.json', 'wb').write(f.http_get(u + 'data/stations.json'))" || echo "網站上也沒有測站資料"
+          python -c "import sys; sys.path.insert(0, 'scripts'); import fetch_stations as f; f.save_history([])" || echo "歷史資料也無法產生"
 
       # ↓ 直接把網站發布出去，不必等 GitHub 另外觸發
       - uses: actions/configure-pages@v6
