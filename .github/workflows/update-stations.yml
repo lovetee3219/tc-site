@@ -37,6 +37,13 @@ jobs:
           key: stations-history-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: stations-history-
 
+      - name: 安裝套件
+        run: pip install numpy scipy
+
+      - name: 準備海溫與海洋熱含量（6 小時內抓過就沿用快取）
+        run: python scripts/fetch_grids.py
+        continue-on-error: true
+
       - name: 下載測站觀測
         run: python scripts/fetch_stations.py
         env:

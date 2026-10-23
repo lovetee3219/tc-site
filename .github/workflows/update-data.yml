@@ -33,7 +33,7 @@ jobs:
           python-version: "3.12"
 
       - name: 安裝套件
-        run: pip install eccodes ecmwf-opendata
+        run: pip install eccodes ecmwf-opendata numpy scipy
 
       - name: 準備海岸線檔案（只有第一次會真的執行）
         run: python scripts/build_coast.py
@@ -66,6 +66,10 @@ jobs:
           path: .cache
           key: stations-history-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: stations-history-
+
+      - name: 下載海溫與海洋熱含量（不存進儲存庫，只隨網站發布）
+        run: python scripts/fetch_grids.py
+        continue-on-error: true
 
       - name: 下載測站觀測（不存進儲存庫，只隨網站發布）
         id: stations
