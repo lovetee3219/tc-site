@@ -816,11 +816,20 @@ function barbSVG(ws, wd) {
 }
 const fmtV = (v, unit, dig = 1) => v === null || v === undefined ? "—" : `${v.toFixed(dig)} ${unit}`;
 const DIR16 = ["北", "北北東", "東北", "東北東", "東", "東南東", "東南", "南南東", "南", "南南西", "西南", "西南西", "西", "西北西", "西北", "北北西"];
+const hhmm24 = iso => new Date(iso).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+function gustLine(o) {
+  if (o.src === "JMA") {   // 氣象廳只有「今天到目前為止的最大瞬間風速」，沒有每 10 分鐘的值
+    return o.gustMax !== null && o.gustMax !== undefined
+      ? `今日最大瞬間風速 ${fmtV(o.gustMax, "m/s")}${o.gustMaxTime ? `（${hhmm24(o.gustMaxTime)} 發生）` : ""}`
+      : `今日最大瞬間風速 —<span style="color:var(--ink-soft)">（只有颱風附近的測站有）</span>`;
+  }
+  return `瞬間風速 ${fmtV(o.gust, "m/s")}${o.gustTime ? `（${hhmm24(o.gustTime)} 發生）` : ""}`;
+}
 function obsTip(o) {
   const dir = o.wd === null || o.wd === undefined || (o.ws || 0) < 0.3 ? "靜風" : `${DIR16[Math.round(o.wd / 22.5) % 16]}風（${Math.round(o.wd)}°）`;
   const t = new Date(o.time).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
   return `<b>${esc(o.name)}</b>　<span style="color:var(--ink-soft)">${o.src === "CWA" ? "中央氣象署" : "日本氣象廳"}</span><br>` +
-    `平均風速 ${fmtV(o.ws, "m/s")}　${dir}<br>瞬間風速 ${fmtV(o.gust, "m/s")}<br>` +
+    `平均風速 ${fmtV(o.ws, "m/s")}　${dir}<br>${gustLine(o)}<br>` +
     `氣壓（${o.pType}）${fmtV(o.p, "hPa")}<br><span style="color:var(--ink-soft)">觀測 ${t}（本地時間）</span>`;
 }
 function drawObs() {
@@ -844,24 +853,41 @@ function drawObs() {
     }
   });
 }
+// 上一次成功讀到的測站資料存在瀏覽器裡：重新整理時先顯示它，就算新資料一時讀不到，風標也不會消失
+const OBS_CACHE_KEY = "tc-site-stations";
+function obsFromCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(OBS_CACHE_KEY));
+    if (c && c.stations && Date.now() - c.saved < 3 * 3600000) return c.stations;
+  } catch {}
+  return [];
+}
+let obsRetry = 0;
+function obsNoteText() {
+  const parts = [["CWA", "中央氣象署"], ["JMA", "日本氣象廳"]].map(([src, label]) => {
+    const list = obsData.filter(o => o.src === src);
+    if (!list.length) return `${label}：目前沒有資料`;
+    const newest = Math.max(...list.map(o => Date.parse(o.time)));
+    const age = Math.round((Date.now() - newest) / 60000);
+    const hm = new Date(newest).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+    return `${label} ${list.length} 站（${hm} 觀測${age > 60 ? "，暫時無法更新" : ""}）`;
+  });
+  return parts.join("；") + "。畫面較擠時只顯示部分測站，放大可看到更多。";
+}
 async function loadObs() {
   const note = document.getElementById("obsNote");
+  if (!obsData.length) obsData = obsFromCache();
   try {
-    const d = await fetch("data/stations.json", { cache: "no-cache" }).then(r => { if (!r.ok) throw 0; return r.json(); });
-    if (!(d.stations || []).length && obsData.length) throw 0;   // 新檔是空的：保留畫面上原本的資料
-    obsData = d.stations || [];
-    const parts = [["CWA", "中央氣象署"], ["JMA", "日本氣象廳"]].map(([src, label]) => {
-      const list = obsData.filter(o => o.src === src);
-      if (!list.length) return `${label}：目前沒有資料`;
-      const newest = Math.max(...list.map(o => Date.parse(o.time)));
-      const age = Math.round((Date.now() - newest) / 60000);
-      const hm = new Date(newest).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
-      return `${label} ${list.length} 站（${hm} 觀測${age > 60 ? "，暫時無法更新" : ""}）`;
-    });
-    note.textContent = parts.join("；") + "。畫面較擠時只顯示部分測站，放大可看到更多。";
+    const d = await fetch(`data/stations.json?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+    if (!(d.stations || []).length) throw 0;   // 新檔是空的：保留畫面上原本的資料
+    obsData = d.stations;
+    obsRetry = 0;
+    try { localStorage.setItem(OBS_CACHE_KEY, JSON.stringify({ saved: Date.now(), stations: obsData })); } catch {}
+    note.textContent = obsNoteText();
   } catch {
-    // 讀取失敗（例如網站剛好在發布新版本）：保留畫面上原本的資料，下次再試
-    if (!obsData.length) note.textContent = "還沒有測站資料，等「更新測站」自動執行一次後就會出現。";
+    // 讀取失敗（例如網站剛好在發布新版本）：保留原本的資料，20 秒後再試（最多 3 次）
+    note.textContent = obsData.length ? obsNoteText() : "測站資料讀取中…（若持續沒有出現，請確認「更新測站」有正常執行）";
+    if (obsRetry++ < 3) setTimeout(loadObs, 20000);
   }
   drawObs();
   // 折線圖開著時，換成這一站的最新資料（滑鼠正停在圖上時先不換，免得數值框突然消失）
@@ -894,7 +920,8 @@ async function openChart(o) {
   const my = ++chartReq;
   chartbox.hidden = false;
   document.getElementById("chartTitle").textContent = o.name;
-  document.getElementById("chartSub").textContent = `${o.src === "CWA" ? "中央氣象署" : "日本氣象廳"}・過去 24 小時・氣壓為${o.pType}氣壓`;
+  document.getElementById("chartSub").textContent = `${o.src === "CWA" ? "中央氣象署" : "日本氣象廳"}・過去 24 小時・氣壓為${o.pType}氣壓` +
+    (o.src === "JMA" ? "・氣象廳不提供每 10 分鐘的瞬間風速" : "");
   chartMsg.textContent = "讀取中…";
   if (chart) { chart.destroy(); chart = null; }
   let h;
@@ -926,7 +953,7 @@ async function openChart(o) {
     type: "line", plugins: [crosshair],
     data: { datasets: [
       { label: "平均風速 (m/s)", data: pts(h.ws), yAxisID: "yw", borderColor: "#4cc9f0", backgroundColor: "#4cc9f0", borderWidth: 2, pointRadius: 1.5, spanGaps: true },
-      { label: "瞬間風速 (m/s)", data: pts(h.gust), yAxisID: "yw", borderColor: "#ff9770", backgroundColor: "#ff9770", borderWidth: 1.6, borderDash: [5, 3], pointRadius: 1.5, spanGaps: true },
+      { label: "瞬間風速 (m/s)", data: pts(h.gust), yAxisID: "yw", hidden: !h.gust.some(v => v !== null), borderColor: "#ff9770", backgroundColor: "#ff9770", borderWidth: 1.6, borderDash: [5, 3], pointRadius: 1.5, spanGaps: true },
       { label: "氣壓 (hPa)", data: pts(h.p), yAxisID: "yp", borderColor: "#c9b6ff", backgroundColor: "#c9b6ff", borderWidth: 2, pointRadius: 0, spanGaps: true },
     ] },
     options: {
