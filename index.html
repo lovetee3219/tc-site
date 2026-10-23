@@ -934,6 +934,7 @@ function barbSVG(ws, wd) {
   // 以「風從正北吹來」畫，再整個旋轉到實際風向；羽毛畫在桿子右側（北半球慣例）
   let d = `M0 0 L0 ${-OBS.staff}`, fill = "", y = -OBS.staff, left = kt;
   while (left >= 50) { fill += `M0 ${y} L${OBS.feather} ${y + 2} L0 ${y + 5} Z `; y += 6; left -= 50; }
+  if (fill) y += 4;   // 三角旗和後面的羽毛之間多留一點空隙，比較好分辨
   while (left >= 10) { d += ` M0 ${y} L${OBS.feather} ${y - 4}`; y += OBS.spacing; left -= 10; }
   if (left >= 5) { if (y === -OBS.staff) y += OBS.spacing; d += ` M0 ${y} L${OBS.feather / 2} ${y - 2}`; }
   const flag = fill ? `<path d="${fill}" fill="#fff" stroke="#0b1620" stroke-width="1"/>` : "";
@@ -1090,7 +1091,8 @@ async function openChart(o) {
   const xs = h.t.map(m => m * 60000);
   const pts = arr => arr.map((v, i) => ({ x: xs[i], y: v }));
   // 日本測站的陣風事件：過去 24 小時內每一次出現新的最大瞬間風速，都在實際發生的時刻畫一個點
-  const gustEvents = (h.gx || []).map((m, k) => ({ x: m * 60000, y: h.gv[k] }));
+  const nearestObs = x => xs.reduce((b, v, i) => Math.abs(v - x) < Math.abs(xs[b] - x) ? i : b, 0);
+  const gustEvents = (h.gx || []).map((m, k) => ({ x: m * 60000, y: h.gv[k], near: nearestObs(m * 60000) }));
   chartMsg.textContent = xs.length < 2 ? "資料累積中，目前只有 1 筆。" : "";
   const ink = cssVar("--ink"), soft = cssVar("--ink-soft"), rule = cssVar("--rule");
   const hhmm = v => new Date(v).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -1148,11 +1150,11 @@ async function openChart(o) {
           filter: it => !(o.src === "JMA" && it.datasetIndex === 1),
           callbacks: {
             title: items => new Date(items[0].parsed.x).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }),
-            // 日本測站：列出「上一筆觀測之後、到這一筆為止」發生的陣風（第一筆則包含之前所有的陣風）
+            // 日本測站：列出「最接近這一筆觀測」的陣風點，滑鼠移到陣風點上時就會看到它的數值
             afterBody: items => {
               if (o.src !== "JMA" || !items.length || !gustEvents.length) return [];
-              const i = items[0].dataIndex, hi = xs[i], lo = i > 0 ? xs[i - 1] : -Infinity;
-              return gustEvents.filter(e => e.x > lo && e.x <= hi)
+              const i = items[0].dataIndex;
+              return gustEvents.filter(e => e.near === i)
                 .map(e => `最大瞬間風速　${e.y.toFixed(1)} m/s（${hhmm24(new Date(e.x).toISOString())} 發生）`);
             },
             label: c => {
