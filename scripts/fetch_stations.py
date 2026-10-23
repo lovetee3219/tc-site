@@ -39,6 +39,16 @@ def num(v):
 
 
 # ── 中央氣象署 ─────────────────────────────────────────────
+def cwa_gust_time(we):
+    """瞬間風發生的時間（氣象署有提供時才填）。"""
+    occ = (we.get("GustInfo") or {}).get("Occurred_at") or {}
+    t = occ.get("DateTime")
+    try:
+        return to_iso(datetime.fromisoformat(t)) if t else None
+    except ValueError:
+        return None
+
+
 def fetch_cwa():
     key = os.environ.get("CWA_API_KEY")
     if not key:
@@ -60,6 +70,7 @@ def fetch_cwa():
             "time": to_iso(datetime.fromisoformat(st["ObsTime"]["DateTime"])),
             "ws": ws, "wd": wd,
             "gust": num((we.get("GustInfo") or {}).get("PeakGustSpeed")),
+            "gustTime": cwa_gust_time(we),
             "p": num(we.get("AirPressure")), "pType": "測站",
         })
     print(f"CWA：{len(out)} 站")
@@ -99,7 +110,11 @@ def km(a, b):
 
 
 def jma_gust(code, t):
-    """讀個別測站的 3 小時檔，取得最新一筆的瞬間風速。"""
+    """
+    讀個別測站的 3 小時檔，取得「今天到目前為止的最大瞬間風速」與發生時刻。
+    注意：氣象廳的 gust 欄位是每日累計的最大值（每天 0 時重新計算），不是每 10 分鐘的瞬間風速，
+    所以它只會維持或變大。氣象廳的公開資料沒有提供每 10 分鐘的瞬間風速。
+    """
     block = t.replace(hour=t.hour - t.hour % 3, minute=0)
     url = f"{JMA}data/point/{code}/{block:%Y%m%d}_{block:%H}.json"
     try:
@@ -107,10 +122,17 @@ def jma_gust(code, t):
     except Exception:
         return None
     obs = d.get(f"{t:%Y%m%d%H%M}00") or (d[max(d)] if d else {})
-    for k, v in obs.items():   # 欄位名稱以 gust 開頭、不是風向或時間的那一個
-        if k.lower().startswith("gust") and "direction" not in k.lower() and "time" not in k.lower():
-            return v[0] if isinstance(v, list) else None
-    return None
+    g = obs.get("gust")
+    if not (isinstance(g, list) and g and g[0] is not None):
+        return None
+    when = None
+    gt = obs.get("gustTime")
+    if isinstance(gt, dict) and "hour" in gt:
+        try:
+            when = to_iso(t.replace(hour=int(gt["hour"]) % 24, minute=int(gt.get("minute", 0)), second=0))
+        except ValueError:
+            pass
+    return {"v": g[0], "time": when}
 
 
 def fetch_jma():
@@ -140,7 +162,8 @@ def fetch_jma():
             "src": "JMA", "id": code, "name": info.get("kjName"), "manned": info.get("type") == "A",
             "lat": round(lat, 4), "lon": round(lon, 4), "time": to_iso(t),
             "ws": ws, "wd": None if not wdc else (wdc % 16) * 22.5,
-            "gust": None,
+            "gust": None,          # 氣象廳沒有每 10 分鐘的瞬間風速
+            "gustMax": None,       # 今日最大瞬間風速（颱風附近的測站才有）
             "p": sea if sea is not None else local, "pType": "海平面" if sea is not None else "測站",
         })
     # 颱風附近的測站另外抓瞬間風速
@@ -150,7 +173,8 @@ def fetch_jma():
     if near:
         with ThreadPoolExecutor(max_workers=6) as ex:
             for i, g in zip(near, ex.map(lambda i: jma_gust(out[i]["id"], t), near)):
-                out[i]["gust"] = g
+                if g:
+                    out[i]["gustMax"], out[i]["gustMaxTime"] = g["v"], g["time"]
     print(f"JMA：{len(out)} 站有風速，其中 {len(near)} 站另外抓了瞬間風速")
     return out
 
