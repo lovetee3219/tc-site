@@ -33,7 +33,7 @@ jobs:
           python-version: "3.12"
 
       - name: 安裝套件
-        run: pip install eccodes ecmwf-opendata numpy scipy
+        run: pip install eccodes ecmwf-opendata numpy scipy copernicusmarine
 
       - name: 準備海岸線檔案（只有第一次會真的執行）
         run: python scripts/build_coast.py
@@ -70,6 +70,9 @@ jobs:
       - name: 下載海溫與海洋熱含量（不存進儲存庫，只隨網站發布）
         run: python scripts/fetch_grids.py
         continue-on-error: true
+        env:   # Copernicus Marine 免費帳號，用來計算海洋熱含量
+          COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
+          COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
 
       - name: 下載測站觀測（不存進儲存庫，只隨網站發布）
         id: stations
