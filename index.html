@@ -1089,13 +1089,8 @@ async function openChart(o) {
   if (my !== chartReq) return;   // 使用者已經點了別的測站
   const xs = h.t.map(m => m * 60000);
   const pts = arr => arr.map((v, i) => ({ x: xs[i], y: v }));
-  // 日本測站的陣風事件：每個事件對應到「第一次觀測到它」的那一筆，滑鼠停在那一筆時一起顯示；
-  // 點本身畫在實際發生的時刻
-  const gustEvents = xs.map(x => ({ x, y: null }));
-  (h.gx || []).forEach((m, k) => {
-    const et = m * 60000, i = xs.findIndex(x => x >= et);
-    if (i >= 0 && (i === 0 || et > xs[i - 1])) gustEvents[i] = { x: et, y: h.gv[k], et };
-  });
+  // 日本測站的陣風事件：過去 24 小時內每一次出現新的最大瞬間風速，都在實際發生的時刻畫一個點
+  const gustEvents = (h.gx || []).map((m, k) => ({ x: m * 60000, y: h.gv[k] }));
   chartMsg.textContent = xs.length < 2 ? "資料累積中，目前只有 1 筆。" : "";
   const ink = cssVar("--ink"), soft = cssVar("--ink-soft"), rule = cssVar("--rule");
   const hhmm = v => new Date(v).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -1117,7 +1112,7 @@ async function openChart(o) {
       // 中央氣象署：即時陣風畫成虛線。日本氣象廳：只在「今日最大瞬間風速」發生的時刻畫一個點
       o.src === "JMA"
         ? { label: "最大瞬間風速 (m/s)", data: gustEvents, yAxisID: "yw", hidden: !gustEvents.some(p => p.y !== null),
-            showLine: false, pointRadius: 4.5, pointHoverRadius: 6, borderColor: "#ff9770", backgroundColor: "#ff9770" }
+            showLine: false, pointRadius: 4.5, pointHoverRadius: 4.5, borderColor: "#ff9770", backgroundColor: "#ff9770" }
         : { label: "瞬間風速 (m/s)", data: pts(h.gust), yAxisID: "yw", hidden: !h.gust.some(v => v !== null), spanGaps: true,
             borderColor: "#ff9770", backgroundColor: "#ff9770", borderWidth: 1.6, borderDash: [5, 3], pointRadius: 1.5 },
       { label: "氣壓 (hPa)", data: pts(h.p), yAxisID: "yp", borderColor: "#c9b6ff", backgroundColor: "#c9b6ff", borderWidth: 2, pointRadius: 0, spanGaps: true },
@@ -1131,16 +1126,20 @@ async function openChart(o) {
         tooltip: {
           backgroundColor: cssVar("--panel-solid"), titleColor: ink, bodyColor: ink, borderColor: rule, borderWidth: 1,
           padding: 10, boxPadding: 4, titleFont: { size: 13 }, bodyFont: { size: 13 },
-          // 日本測站的陣風只在發生的那一筆顯示，其他時間不列出
-          filter: it => !(o.src === "JMA" && it.datasetIndex === 1 && (!it.raw || it.raw.y === null)),
+          // 日本測站的陣風點不跟著折線逐筆列出，改由下面的 afterBody 列出這段時間內發生的陣風
+          filter: it => !(o.src === "JMA" && it.datasetIndex === 1),
           callbacks: {
             title: items => new Date(items[0].parsed.x).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }),
+            // 日本測站：列出「上一筆觀測之後、到這一筆為止」發生的陣風（第一筆則包含之前所有的陣風）
+            afterBody: items => {
+              if (o.src !== "JMA" || !items.length || !gustEvents.length) return [];
+              const i = items[0].dataIndex, hi = xs[i], lo = i > 0 ? xs[i - 1] : -Infinity;
+              return gustEvents.filter(e => e.x > lo && e.x <= hi)
+                .map(e => `最大瞬間風速　${e.y.toFixed(1)} m/s（${hhmm24(new Date(e.x).toISOString())} 發生）`);
+            },
             label: c => {
               const name = ["平均風速", o.src === "JMA" ? "最大瞬間風速" : "瞬間風速", "氣壓"][c.datasetIndex];
               const v = c.raw && c.raw.y;
-              if (o.src === "JMA" && c.datasetIndex === 1) {   // 日本測站：只有發生陣風的那一筆才顯示
-                return v === null || v === undefined ? null : `${name}　${v.toFixed(1)} m/s（${hhmm24(new Date(c.raw.et).toISOString())} 發生）`;
-              }
               if (v === null || v === undefined || Number.isNaN(v)) return `${name}　無資料`;
               return c.datasetIndex === 2 ? `${name}　${v.toFixed(1)} hPa` : `${name}　${v.toFixed(1)} m/s`;
             },
