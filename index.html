@@ -1047,9 +1047,20 @@ async function openChart(o) {
   let h;
   try {
     await loadChartJs();
-    h = await fetch(`data/history/${encodeURIComponent(o.src + "_" + o.id)}.json`, { cache: "no-cache" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+    // 網站剛好在發布新版本時可能暫時讀不到，最多試 3 次、每次間隔 3 秒
+    const url = `data/history/${encodeURIComponent(o.src + "_" + o.id)}.json`;
+    for (let i = 0; ; i++) {
+      try {
+        h = await fetch(`${url}?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+        break;
+      } catch (e) {
+        if (i >= 2 || my !== chartReq) throw e;
+        chartMsg.textContent = "讀取中…（網站可能正在更新，稍候自動重試）";
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
   } catch {
-    if (my === chartReq) chartMsg.textContent = "這個測站還沒有歷史資料。網站每 20 分鐘累積一筆，最多保留 24 小時。";
+    if (my === chartReq) chartMsg.textContent = "暫時讀不到這個測站的歷史資料。網站可能正在更新，請過一兩分鐘再點一次；如果是剛出現的測站，資料會從下一次更新開始累積。";
     return;
   }
   if (my !== chartReq) return;   // 使用者已經點了別的測站
