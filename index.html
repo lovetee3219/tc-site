@@ -317,7 +317,7 @@ L.control.zoom({ position: "topright" }).addTo(map);
 
 // 只畫海陸邊界線（Natural Earth 1:5000 萬海岸線，公有領域資料）
 map.attributionControl.setPrefix(false).addAttribution(
-  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a> · 海溫與海洋熱含量：NOAA' +
+  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a> · 海溫：NOAA · 海洋熱含量：Generated using E.U. <a href="https://marine.copernicus.eu/">Copernicus Marine Service</a> information' +
   ' · 路徑：<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://www.cwa.gov.tw/">中央氣象署</a>、JTWC、NCAR TCGP、' +
   'Based on data and products of <a href="https://www.ecmwf.int/">ECMWF</a> (CC BY 4.0)、<a href="https://deepmind.google.com/science/weatherlab">Google DeepMind Weather Lab</a>');
 map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
