@@ -128,8 +128,14 @@ def jma_gust(code, t):
     when = None
     gt = obs.get("gustTime")
     if isinstance(gt, dict) and "hour" in gt:
+        # 氣象廳的 gustTime 是「世界時（UTC）」的時與分，不是日本時間。
+        # 取「不晚於觀測時間」的最近一次該時分，就是實際發生的時刻（必要時往前一天）。
         try:
-            when = to_iso(t.replace(hour=int(gt["hour"]) % 24, minute=int(gt.get("minute", 0)), second=0))
+            tu = t.astimezone(timezone.utc)
+            gdt = tu.replace(hour=int(gt["hour"]) % 24, minute=int(gt.get("minute", 0)), second=0, microsecond=0)
+            if gdt > tu:
+                gdt -= timedelta(days=1)
+            when = to_iso(gdt)
         except ValueError:
             pass
     return {"v": g[0], "time": when}
