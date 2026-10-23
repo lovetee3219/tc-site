@@ -234,6 +234,10 @@ def save_history(stations):
         cols = list(zip(*rows))
         (HIST_DIR / f"{key}.json").write_text(json.dumps(
             {"t": cols[0], "ws": cols[1], "gust": cols[2], "p": cols[3]}, separators=(",", ":")))
+    # 清單檔：網頁讀不到某站的歷史資料時，用它判斷是哪裡出問題
+    (HIST_DIR / "index.json").write_text(json.dumps({
+        "updated": to_iso(datetime.now(timezone.utc)), "count": len(store),
+        "stations": {k: [len(v), v[-1][0]] for k, v in store.items()}}, separators=(",", ":")))
     longest = max((len(v) for v in store.values()), default=0)
     print(f"歷史資料：{len(store)} 站，最多累積 {longest} 筆")
 
