@@ -109,36 +109,54 @@ def km(a, b):
     return 6371 * 2 * math.asin(math.sqrt(h))
 
 
-def jma_gust(code, t):
+def gust_time_utc(gt, ref):
     """
-    讀個別測站的 3 小時檔，取得「今天到目前為止的最大瞬間風速」與發生時刻。
-    注意：氣象廳的 gust 欄位是每日累計的最大值（每天 0 時重新計算），不是每 10 分鐘的瞬間風速，
-    所以它只會維持或變大。氣象廳的公開資料沒有提供每 10 分鐘的瞬間風速。
+    氣象廳的 gustTime 是「世界時（UTC）」的時與分，不是日本時間。
+    取「不晚於該筆觀測時間」的最近一次該時分，就是實際發生的時刻（必要時往前一天）。
     """
-    block = t.replace(hour=t.hour - t.hour % 3, minute=0)
-    url = f"{JMA}data/point/{code}/{block:%Y%m%d}_{block:%H}.json"
+    if not (isinstance(gt, dict) and "hour" in gt):
+        return None
     try:
-        d = json.loads(http_get(url, timeout=20))
-    except Exception:
+        tu = ref.astimezone(timezone.utc)
+        g = tu.replace(hour=int(gt["hour"]) % 24, minute=int(gt.get("minute", 0)), second=0, microsecond=0)
+        return g - timedelta(days=1) if g > tu else g
+    except ValueError:
         return None
-    obs = d.get(f"{t:%Y%m%d%H%M}00") or (d[max(d)] if d else {})
-    g = obs.get("gust")
-    if not (isinstance(g, list) and g and g[0] is not None):
-        return None
-    when = None
-    gt = obs.get("gustTime")
-    if isinstance(gt, dict) and "hour" in gt:
-        # 氣象廳的 gustTime 是「世界時（UTC）」的時與分，不是日本時間。
-        # 取「不晚於觀測時間」的最近一次該時分，就是實際發生的時刻（必要時往前一天）。
+
+
+def jma_gust(code, t, blocks=2):
+    """
+    讀個別測站最近幾個 3 小時檔，取得：
+      最新的「今天到目前為止的最大瞬間風速」與發生時刻，以及
+      這段期間每一次出現新的最大值（events：發生時刻 → 風速）。
+    注意：氣象廳的 gust 欄位是每日累計的最大值（日本時間每天 0 時重新計算），不是每 10 分鐘的瞬間風速。
+    每個檔案裡每 10 分鐘有一筆，逐筆讀就能找出最大值是在什麼時候、變成多少。
+    blocks=2 讀目前與前一個檔（6 小時）；第一次替某站補資料時讀 8 個檔（24 小時）。
+    """
+    latest, events = None, {}
+    for k in range(blocks):
+        b = t - timedelta(hours=3 * k)
+        b = b.replace(hour=b.hour - b.hour % 3, minute=0)
         try:
-            tu = t.astimezone(timezone.utc)
-            gdt = tu.replace(hour=int(gt["hour"]) % 24, minute=int(gt.get("minute", 0)), second=0, microsecond=0)
-            if gdt > tu:
-                gdt -= timedelta(days=1)
-            when = to_iso(gdt)
-        except ValueError:
-            pass
-    return {"v": g[0], "time": when}
+            d = json.loads(http_get(f"{JMA}data/point/{code}/{b:%Y%m%d}_{b:%H}.json", timeout=20))
+        except Exception:
+            continue
+        for ts, obs in d.items():
+            g = obs.get("gust")
+            if not (isinstance(g, list) and g and g[0] is not None):
+                continue
+            try:
+                ref = datetime.strptime(ts, "%Y%m%d%H%M%S").replace(tzinfo=JST)
+            except ValueError:
+                continue
+            when = gust_time_utc(obs.get("gustTime"), ref)
+            if when:
+                events[to_iso(when)] = g[0]
+            if latest is None or ref > latest[0]:
+                latest = (ref, g[0], to_iso(when) if when else None)
+    if latest is None:
+        return None
+    return {"v": latest[1], "time": latest[2], "events": sorted(events.items())}
 
 
 def fetch_jma():
@@ -177,10 +195,18 @@ def fetch_jma():
     near = sorted((min(km((s["lat"], s["lon"]), c) for c in centers), i) for i, s in enumerate(out)) if centers else []
     near = [i for d, i in near if d <= GUST_RADIUS_KM][:GUST_MAX_STATIONS]
     if near:
+        # 還沒有陣風紀錄的測站，第一次讀 24 小時補齊；之後每次只讀最近 6 小時（每次最多補 60 站，分散負擔）
+        have = set()
+        try:
+            have = {k.split("#")[0] for k in json.loads(STORE.read_text()) if k.endswith("#gust")}
+        except Exception:
+            pass
+        backfill = set([i for i in near if f"JMA_{out[i]['id']}" not in have][:60])
         with ThreadPoolExecutor(max_workers=6) as ex:
-            for i, g in zip(near, ex.map(lambda i: jma_gust(out[i]["id"], t), near)):
+            for i, g in zip(near, ex.map(lambda i: jma_gust(out[i]["id"], t, 8 if i in backfill else 2), near)):
                 if g:
                     out[i]["gustMax"], out[i]["gustMaxTime"] = g["v"], g["time"]
+                    out[i]["gustEvents"] = g["events"]
     print(f"JMA：{len(out)} 站有風速，其中 {len(near)} 站另外抓了瞬間風速")
     return out
 
@@ -229,12 +255,17 @@ def save_history(stations):
             rows.append([t, st.get("ws"), st.get("gust"), st.get("p")])
             store[key] = sorted(rows)
             # 日本氣象廳：沒有即時陣風，改記錄「今日最大瞬間風速」的發生時間與數值（同一時間只記一次）
+            new = list(st.get("gustEvents") or [])
             if st.get("gustMax") is not None and st.get("gustMaxTime"):
-                gt = int(datetime.fromisoformat(st["gustMaxTime"].replace("Z", "+00:00")).timestamp() // 60)
+                new.append((st["gustMaxTime"], st["gustMax"]))
+            if new:
                 ek = key + "#gust"
-                ev = [e for e in store.get(ek, []) if e[0] >= cutoff and e[0] != gt]
-                ev.append([gt, st["gustMax"]])
-                store[ek] = sorted(ev)
+                ev = {e[0]: e[1] for e in store.get(ek, []) if e[0] >= cutoff}
+                for iso_t, v in new:
+                    m = int(datetime.fromisoformat(iso_t.replace("Z", "+00:00")).timestamp() // 60)
+                    if m >= cutoff:
+                        ev[m] = v
+                store[ek] = sorted([m, v] for m, v in ev.items())
         except Exception as e:
             print("  略過一筆有問題的測站資料：", e)
     store = {k: v for k, v in store.items() if v and v[-1][0] >= cutoff}
