@@ -216,14 +216,18 @@ def save_history(stations):
     now_min = int(datetime.now(timezone.utc).timestamp() // 60)
     cutoff = now_min - KEEP_HOURS * 60
     for st in stations:
-        key = f"{st['src']}_{st['id']}"
-        t = int(datetime.fromisoformat(st["time"].replace("Z", "+00:00")).timestamp() // 60)
-        rows = [r for r in store.get(key, []) if r[0] >= cutoff and r[0] != t]
-        rows.append([t, st["ws"], st["gust"], st["p"]])
-        store[key] = sorted(rows)
+        try:   # 單一測站的資料有問題時略過它，不影響其他測站
+            key = f"{st['src']}_{st['id']}"
+            t = int(datetime.fromisoformat(st["time"].replace("Z", "+00:00")).timestamp() // 60)
+            rows = [r for r in store.get(key, []) if r[0] >= cutoff and r[0] != t]
+            rows.append([t, st.get("ws"), st.get("gust"), st.get("p")])
+            store[key] = sorted(rows)
+        except Exception as e:
+            print("  略過一筆有問題的測站資料：", e)
     store = {k: v for k, v in store.items() if v and v[-1][0] >= cutoff}
     STORE.parent.mkdir(parents=True, exist_ok=True)
     STORE.write_text(json.dumps(store, separators=(",", ":")))
+    PUBLIC_STORE.parent.mkdir(parents=True, exist_ok=True)
     PUBLIC_STORE.write_text(STORE.read_text())
     HIST_DIR.mkdir(parents=True, exist_ok=True)
     for key, rows in store.items():
@@ -259,6 +263,7 @@ def load_last():
 
 def main():
     stations, last, good = [], load_last(), {}
+    main.stations = stations
     limit = datetime.now(timezone.utc) - timedelta(hours=MAX_STALE_HOURS)
     for name, fn in (("CWA", fetch_cwa), ("JMA", fetch_jma)):
         try:
@@ -270,7 +275,7 @@ def main():
         except Exception as e:
             # 這次抓不到：沿用上次成功的資料（3 小時內），網頁上的測站才不會整批消失
             old = [st for st in last.get(name, [])
-                   if datetime.fromisoformat(st["time"].replace("Z", "+00:00")) >= limit]
+                   if st.get("time") and datetime.fromisoformat(st["time"].replace("Z", "+00:00")) >= limit]
             stations += old
             good[name] = last.get(name, [])
             print(f"{name} 失敗：{e}；沿用上次的 {len(old)} 站資料")
@@ -280,8 +285,20 @@ def main():
     OUT.write_text(json.dumps({"updated": to_iso(datetime.now(timezone.utc)), "stations": stations},
                               ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print("已寫入", OUT, f"（共 {len(stations)} 站）")
-    save_history(stations)
+    return stations
+
+
+def main_safe():
+    """不論抓資料時發生什麼錯誤，最後都一定要產生歷史資料檔，網頁的折線圖才不會整批讀不到。"""
+    main.stations = []
+    try:
+        main()
+    finally:
+        try:
+            save_history(main.stations)   # main 中途出錯時，也會用到目前為止抓到的資料
+        except Exception as e:
+            print("歷史資料寫入失敗：", e)
 
 
 if __name__ == "__main__":
-    main()
+    main_safe()
