@@ -158,6 +158,7 @@
     border: 1px solid var(--rule); box-shadow: var(--shadow);
   }
   .tau-label { font-family: var(--num); font-size: 12px; font-weight: 600; color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000; white-space: nowrap; }
+  .ddhh-label { position: absolute; right: 6px; top: -8px; line-height: 16px; }
   .leaflet-control-attribution { font-size: 10.5px; }
 
   @media (max-width: 720px) {
@@ -725,8 +726,13 @@ function drawForecast(f, color) {
     const m = L.circleMarker(ll[i], { pane: "tracks", radius: f.category === "official" ? 4 : 2.5, color, fillColor: color, fillOpacity: 1, weight: 1 })
       .bindTooltip(`<b>${esc(f.label)}</b>　+${p.tau} 小時<br>${fmtTime(valid)}${p.vmax ? `<br>最大風速 ${p.vmax} 節` : ""}${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" });
     m.addTo(g);
-    if (f.tauLabels && p.tau > 0 && p.tau % 24 === 0) {
-      L.marker(ll[i], { pane: "tracks", interactive: false, icon: L.divIcon({ className: "tau-label", html: `${p.tau}h`, iconAnchor: [-6, 8] }) }).addTo(g);
+    // 00、06、12、18Z 的預報點標上本地時間的「日時」（DDHH），畫在點的左側，文字顏色同路徑
+    const vt = new Date(valid);
+    if (p.tau > 0 && vt.getUTCHours() % 6 === 0 && vt.getUTCMinutes() === 0) {
+      const ddhh = String(vt.getDate()).padStart(2, "0") + String(vt.getHours()).padStart(2, "0");
+      L.marker(ll[i], { pane: "tracks", interactive: false, icon: L.divIcon({
+        className: "", iconSize: [0, 0],
+        html: `<span class="tau-label ddhh-label" style="color:${color}">${ddhh}</span>` }) }).addTo(g);
     }
   });
   return g;
@@ -829,7 +835,6 @@ async function loadTracks() {
       sec.list.forEach(f => {
         const cat = f.category;
         const color = CONFIG.modelColors[f.model] || CONFIG.palette[cat][used[cat]++ % CONFIG.palette[cat].length];
-        f.tauLabels = cat === "official" && f === sections[0].list[0];   // 只在第一條官方路徑標 24h、48h…，避免文字重疊
         const key = `${storm.id}:${f.model}`;
         const stale = newest - Date.parse(f.init) >= 12 * 3600000;   // 比最新的預報早 12 小時以上
         trackLayers[key] = drawForecast(f, color);
