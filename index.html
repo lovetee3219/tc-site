@@ -1094,6 +1094,24 @@ async function openChart(o) {
   chartMsg.textContent = xs.length < 2 ? "資料累積中，目前只有 1 筆。" : "";
   const ink = cssVar("--ink"), soft = cssVar("--ink-soft"), rule = cssVar("--rule");
   const hhmm = v => new Date(v).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+  // 自訂的滑鼠對應方式：只依「觀測時間」（平均風速那條線的點）找出最接近滑鼠的那一筆，
+  // 再取出各條線在同一筆的數值。陣風點的時間和觀測時間不同（aligned: false），不參與對應，
+  // 否則滑鼠靠近陣風點時，會被誤當成第幾筆觀測而跳到別的時間。
+  if (!Chart.Interaction.modes.obsTime) {
+    Chart.Interaction.modes.obsTime = (c, e) => {
+      const pos = Chart.helpers.getRelativePosition(e, c), base = c.getDatasetMeta(0).data;
+      if (!base.length) return [];
+      let best = 0, bd = Infinity;
+      base.forEach((el, i) => { const d = Math.abs(el.x - pos.x); if (d < bd) { bd = d; best = i; } });
+      const items = [];
+      c.data.datasets.forEach((ds, di) => {
+        if (ds.aligned === false || !c.isDatasetVisible(di)) return;
+        const el = c.getDatasetMeta(di).data[best];
+        if (el) items.push({ element: el, datasetIndex: di, index: best });
+      });
+      return items;
+    };
+  }
   // 在滑鼠所在的時間點畫一條垂直參考線
   const crosshair = {
     id: "crosshair",
@@ -1111,15 +1129,15 @@ async function openChart(o) {
       { label: "平均風速 (m/s)", data: pts(h.ws), yAxisID: "yw", borderColor: "#4cc9f0", backgroundColor: "#4cc9f0", borderWidth: 2, pointRadius: 1.5, spanGaps: true },
       // 中央氣象署：即時陣風畫成虛線。日本氣象廳：只在「今日最大瞬間風速」發生的時刻畫一個點
       o.src === "JMA"
-        ? { label: "最大瞬間風速 (m/s)", data: gustEvents, yAxisID: "yw", hidden: !gustEvents.some(p => p.y !== null),
+        ? { label: "最大瞬間風速 (m/s)", data: gustEvents, yAxisID: "yw", aligned: false, hidden: !gustEvents.some(p => p.y !== null),
             showLine: false, pointRadius: 4.5, pointHoverRadius: 4.5, borderColor: "#ff9770", backgroundColor: "#ff9770" }
         : { label: "瞬間風速 (m/s)", data: pts(h.gust), yAxisID: "yw", hidden: !h.gust.some(v => v !== null), spanGaps: true,
             borderColor: "#ff9770", backgroundColor: "#ff9770", borderWidth: 1.6, borderDash: [5, 3], pointRadius: 1.5 },
-      { label: "氣壓 (hPa)", data: pts(h.p), yAxisID: "yp", borderColor: "#c9b6ff", backgroundColor: "#c9b6ff", borderWidth: 2, pointRadius: 0, spanGaps: true },
+      { label: "氣壓 (hPa)", data: pts(h.p), yAxisID: "yp", hidden: !h.p.some(v => v !== null), borderColor: "#c9b6ff", backgroundColor: "#c9b6ff", borderWidth: 2, pointRadius: 0, spanGaps: true },
     ] },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
-      interaction: { mode: "index", intersect: false },
+      interaction: { mode: "obsTime", intersect: false },
       plugins: {
         legend: { labels: { color: ink, boxWidth: 14, boxHeight: 2, font: { size: 12 } } },
         // 滑鼠（或手指）移到圖上：顯示那個時間點的三個數值
@@ -1158,7 +1176,8 @@ async function openChart(o) {
              ticks: { color: soft, callback: hhmm, maxRotation: 0, autoSkip: true }, grid: { color: rule } },
         yw: { position: "left", beginAtZero: true, title: { display: true, text: "風速 m/s", color: soft },
               ticks: { color: soft }, grid: { color: rule } },
-        yp: { position: "right", title: { display: true, text: "氣壓 hPa", color: soft },
+        yp: { position: "right", display: h.p.some(v => v !== null),   // 測站沒有氣壓資料時不顯示右側座標
+              title: { display: true, text: "氣壓 hPa", color: soft },
               // 上下界至少相差 5 hPa（取整數），避免氣壓幾乎不變時，微小起伏被放大成劇烈變化
               afterDataLimits: axis => {
                 const lo = axis.min, hi = axis.max, minSpan = 5;
