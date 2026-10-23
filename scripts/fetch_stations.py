@@ -201,7 +201,7 @@ def site_url():
 def load_store():
     try:
         store = json.loads(STORE.read_text())
-        print(f"歷史資料：從 GitHub 快取讀到 {len(store)} 站")
+        print(f"歷史資料：從 GitHub 快取讀到 {sum('#' not in k for k in store)} 站")
         return store
     except Exception:
         pass
@@ -209,7 +209,7 @@ def load_store():
     if url:
         try:
             store = json.loads(http_get(url + "data/history_store.json", timeout=60))
-            print(f"歷史資料：快取沒有資料，改從網站取回 {len(store)} 站")
+            print(f"歷史資料：快取沒有資料，改從網站取回 {sum('#' not in k for k in store)} 站")
             return store
         except Exception as e:
             print("歷史資料：快取與網站都沒有舊資料，從頭開始累積（", e, "）")
@@ -228,6 +228,13 @@ def save_history(stations):
             rows = [r for r in store.get(key, []) if r[0] >= cutoff and r[0] != t]
             rows.append([t, st.get("ws"), st.get("gust"), st.get("p")])
             store[key] = sorted(rows)
+            # 日本氣象廳：沒有即時陣風，改記錄「今日最大瞬間風速」的發生時間與數值（同一時間只記一次）
+            if st.get("gustMax") is not None and st.get("gustMaxTime"):
+                gt = int(datetime.fromisoformat(st["gustMaxTime"].replace("Z", "+00:00")).timestamp() // 60)
+                ek = key + "#gust"
+                ev = [e for e in store.get(ek, []) if e[0] >= cutoff and e[0] != gt]
+                ev.append([gt, st["gustMax"]])
+                store[ek] = sorted(ev)
         except Exception as e:
             print("  略過一筆有問題的測站資料：", e)
     store = {k: v for k, v in store.items() if v and v[-1][0] >= cutoff}
@@ -236,16 +243,20 @@ def save_history(stations):
     PUBLIC_STORE.parent.mkdir(parents=True, exist_ok=True)
     PUBLIC_STORE.write_text(STORE.read_text())
     HIST_DIR.mkdir(parents=True, exist_ok=True)
-    for key, rows in store.items():
+    stations_only = {k: v for k, v in store.items() if "#" not in k}
+    for key, rows in stations_only.items():
         cols = list(zip(*rows))
-        (HIST_DIR / f"{key}.json").write_text(json.dumps(
-            {"t": cols[0], "ws": cols[1], "gust": cols[2], "p": cols[3]}, separators=(",", ":")))
+        out = {"t": cols[0], "ws": cols[1], "gust": cols[2], "p": cols[3]}
+        ev = store.get(key + "#gust")
+        if ev:   # 陣風發生時刻（分鐘）與數值
+            out["gx"], out["gv"] = [e[0] for e in ev], [e[1] for e in ev]
+        (HIST_DIR / f"{key}.json").write_text(json.dumps(out, separators=(",", ":")))
     # 清單檔：網頁讀不到某站的歷史資料時，用它判斷是哪裡出問題
     (HIST_DIR / "index.json").write_text(json.dumps({
-        "updated": to_iso(datetime.now(timezone.utc)), "count": len(store),
-        "stations": {k: [len(v), v[-1][0]] for k, v in store.items()}}, separators=(",", ":")))
-    longest = max((len(v) for v in store.values()), default=0)
-    print(f"歷史資料：{len(store)} 站，最多累積 {longest} 筆")
+        "updated": to_iso(datetime.now(timezone.utc)), "count": len(stations_only),
+        "stations": {k: [len(v), v[-1][0]] for k, v in stations_only.items()}}, separators=(",", ":")))
+    longest = max((len(v) for v in stations_only.values()), default=0)
+    print(f"歷史資料：{len(stations_only)} 站，最多累積 {longest} 筆")
 
 
 LAST = ROOT / ".cache" / "stations_last.json"   # 各來源最後一次成功的資料
