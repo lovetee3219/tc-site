@@ -286,9 +286,19 @@ const CONFIG = {
   // 指定特定來源的顏色（優先於上面的 palette）
   modelColors: {
     JTWC: "#ffffff", OFCL: "#ffffff", RJTD: "#ff6b6b", RCTP: "#ffd23f", VHHH: "#7ee0a1",
-    ECMF: "#4895ef", EEMN: "#90c2ff", AIFS: "#ff70a6", AIEMN: "#ffa3c7",
+    ECMF: "#4895ef", EEMN: "#90c2ff", AVNO: "#4cc9f0", AEMN: "#8fe3f0", AIFS: "#ff70a6", AIEMN: "#ffa3c7",
+    WN2C: "#ff9f43", WN3C: "#d77dff",
   },
-  groupColors: { "ECMWF 系集成員": "#90c2ff", "AIFS 系集成員": "#ffa3c7" },
+  groupColors: { "ECMWF 系集成員": "#90c2ff", "GEFS 系集成員": "#8fe3f0", "AIFS 系集成員": "#ffa3c7",
+                 "FNV3（WN2C）系集成員": "#ffc48a", "WN3C 系集成員": "#e6b3ff" },
+  // 左欄的模式分組與順序（models：該組的單一預報／系集平均代碼，group：該組系集成員的名稱）
+  families: [
+    { name: "ECMWF", models: ["ECMF", "EMX", "EEMN"], group: "ECMWF 系集成員" },
+    { name: "GFS", models: ["AVNO", "AVNI", "AEMN"], group: "GEFS 系集成員" },
+    { name: "AIFS", models: ["AIFS", "AIEMN"], group: "AIFS 系集成員" },
+    { name: "FNV3（WN2C）", models: ["WN2C"], group: "FNV3（WN2C）系集成員" },
+    { name: "WN3C", models: ["WN3C"], group: "WN3C 系集成員" },
+  ],
 };
 /* ======================================================================== */
 
@@ -301,7 +311,7 @@ L.control.zoom({ position: "topright" }).addTo(map);
 map.attributionControl.setPrefix(false).addAttribution(
   '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a>' +
   ' · 路徑：<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://www.cwa.gov.tw/">中央氣象署</a>、JTWC、NCAR TCGP、' +
-  'Based on data and products of <a href="https://www.ecmwf.int/">ECMWF</a> (CC BY 4.0)');
+  'Based on data and products of <a href="https://www.ecmwf.int/">ECMWF</a> (CC BY 4.0)、<a href="https://deepmind.google.com/science/weatherlab">Google DeepMind Weather Lab</a>');
 map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
 map.getPane("coast").style.pointerEvents = "none";
 const coastRenderer = L.canvas({ pane: "coast" });
@@ -695,43 +705,52 @@ async function loadTracks() {
 
     const newest = Math.max(...storm.forecasts.map(f => Date.parse(f.init)));
     const fmtInit = iso => { const d = new Date(iso); return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")} ${String(d.getUTCHours()).padStart(2, "0")}Z 起報`; };
-    ["official", "nwp", "ai"].forEach(cat => {
-      const ORDER = ["JTWC", "OFCL", "RJTD", "RCTP"];
-      const rank = m => (ORDER.indexOf(m) + 1) || 99;
-      const list = storm.forecasts.filter(f => f.category === cat).sort((a, b) => rank(a.model) - rank(b.model));
-      if (!list.length) return;
-      body.insertAdjacentHTML("beforeend", `<div class="cat">${CAT_NAME[cat]}</div>`);
-      list.forEach((f, i) => {
-        const color = CONFIG.modelColors[f.model] || CONFIG.palette[cat][i % CONFIG.palette[cat].length];
-        f.tauLabels = cat === "official" && i === 0;   // 只在第一條官方路徑標 24h、48h…，避免文字重疊
+    // 左欄順序：官方預報 → ECMWF → GFS → AIFS → FNV3（WN2C）→ WN3C → 其他；每組「單一預報、系集平均」在前，系集成員在後
+    // 一進網頁只勾選官方預報，其餘預設不顯示
+    const ORDER = ["JTWC", "OFCL", "RJTD", "RCTP"];
+    const rank = m => (ORDER.indexOf(m) + 1) || 99;
+    const famOf = f => CONFIG.families.find(x => f.category === "ens" ? x.group === f.group : x.models.includes(f.model));
+    const det = storm.forecasts.filter(f => f.category !== "ens");
+    const ens = {};
+    storm.forecasts.filter(f => f.category === "ens").forEach(f => (ens[f.group] ||= []).push(f));
+    const sections = [{ title: "官方預報", list: det.filter(f => f.category === "official").sort((a, b) => rank(a.model) - rank(b.model)), groups: [] }];
+    CONFIG.families.forEach(fam => sections.push({
+      title: fam.name,
+      list: det.filter(f => f.category !== "official" && famOf(f) === fam).sort((a, b) => fam.models.indexOf(a.model) - fam.models.indexOf(b.model)),
+      groups: ens[fam.group] ? [fam.group] : [],
+    }));
+    sections.push({ title: "其他模式", list: det.filter(f => f.category !== "official" && !famOf(f)),
+                    groups: Object.keys(ens).filter(g => !CONFIG.families.some(x => x.group === g)) });
+    const used = { official: 0, nwp: 0, ai: 0, ens: 0 };
+    sections.forEach(sec => {
+      if (!sec.list.length && !sec.groups.length) return;
+      body.insertAdjacentHTML("beforeend", `<div class="cat">${esc(sec.title)}</div>`);
+      sec.list.forEach(f => {
+        const cat = f.category;
+        const color = CONFIG.modelColors[f.model] || CONFIG.palette[cat][used[cat]++ % CONFIG.palette[cat].length];
+        f.tauLabels = cat === "official" && f === sections[0].list[0];   // 只在第一條官方路徑標 24h、48h…，避免文字重疊
         const key = `${storm.id}:${f.model}`;
         const stale = newest - Date.parse(f.init) >= 12 * 3600000;   // 比最新的預報早 12 小時以上
         trackLayers[key] = drawForecast(f, color);
         keys.push(key);
         body.insertAdjacentHTML("beforeend",
-          `<label class="row model"><input type="checkbox" checked data-key="${key}"><span class="swatch ${cat}" style="border-top-color:${color}"></span>` +
+          `<label class="row model"><input type="checkbox" ${cat === "official" ? "checked" : ""} data-key="${key}"><span class="swatch ${cat}" style="border-top-color:${color}"></span>` +
           `<span class="model-text">${esc(f.label)}<span class="model-init${stale ? " stale" : ""}">${fmtInit(f.init)}${stale ? "（較舊）" : ""}</span></span>` +
           `<span class="model-code">${esc(f.model)}</span></label>`);
       });
-    });
-
-    // 系集成員：每個系集一個勾選框，預設不顯示（線很多）
-    const ens = {};
-    storm.forecasts.filter(f => f.category === "ens").forEach(f => (ens[f.group] ||= []).push(f));
-    const groups = Object.keys(ens);
-    if (groups.length) body.insertAdjacentHTML("beforeend", `<div class="cat">系集成員</div>`);
-    groups.forEach((name, i) => {
-      const color = CONFIG.groupColors[name] || CONFIG.palette.ens[i % CONFIG.palette.ens.length];
-      const key = `${storm.id}:ens:${name}`;
-      const g = L.layerGroup();
-      ens[name].forEach(f => L.polyline(unwrap(f.points), { pane: "tracks", color, weight: 1, opacity: 0.55 })
-        .bindTooltip(`<b>${esc(f.model)}</b>　${fmtInit(f.init)}`, { className: "tc-tip", sticky: true }).addTo(g));
-      trackLayers[key] = g;
-      keys.push(key);
-      const init = ens[name].map(f => f.init).sort().pop();
-      body.insertAdjacentHTML("beforeend",
-        `<label class="row model"><input type="checkbox" data-key="${key}"><span class="swatch" style="border-top:1.5px solid ${color}"></span>` +
-        `<span class="model-text">${esc(name)}<span class="model-init">${ens[name].length} 條・${fmtInit(init)}</span></span></label>`);
+      sec.groups.forEach(name => {
+        const color = CONFIG.groupColors[name] || CONFIG.palette.ens[used.ens++ % CONFIG.palette.ens.length];
+        const key = `${storm.id}:ens:${name}`;
+        const g = L.layerGroup();
+        ens[name].forEach(f => L.polyline(unwrap(f.points), { pane: "tracks", color, weight: 1, opacity: 0.55 })
+          .bindTooltip(`<b>${esc(f.model)}</b>　${fmtInit(f.init)}`, { className: "tc-tip", sticky: true }).addTo(g));
+        trackLayers[key] = g;
+        keys.push(key);
+        const init = ens[name].map(f => f.init).sort().pop();
+        body.insertAdjacentHTML("beforeend",
+          `<label class="row model"><input type="checkbox" data-key="${key}"><span class="swatch" style="border-top:1.5px solid ${color}"></span>` +
+          `<span class="model-text">${esc(name)}<span class="model-init">${ens[name].length} 條・${fmtInit(init)}</span></span></label>`);
+      });
     });
     box.appendChild(wrap);
     wrap.querySelectorAll("[data-key],[data-storm]").forEach(cb => {
