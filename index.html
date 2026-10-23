@@ -936,17 +936,15 @@ function barbSVG(ws, wd) {
 }
 const fmtV = (v, unit, dig = 1) => v === null || v === undefined ? "—" : `${v.toFixed(dig)} ${unit}`;
 const DIR16 = ["北", "北北東", "東北", "東北東", "東", "東南東", "東南", "南南東", "南", "南南西", "西南", "西南西", "西", "西北西", "西北", "北北西"];
+// 時間一律換成瀏覽器所在時區（本地時間）顯示
 const hhmm24 = iso => new Date(iso).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
-// 本地時間（瀏覽器所在時區）的「月/日 時:分」，例如 10/23 12:40
-const fmtLocal = iso => new Date(iso).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 function gustLine(o) {
   if (o.src === "JMA") {   // 氣象廳只有「今天到目前為止的最大瞬間風速」，沒有每 10 分鐘的值
     return o.gustMax !== null && o.gustMax !== undefined
-      ? `今日最大瞬間風速 ${fmtV(o.gustMax, "m/s")}${o.gustMaxTime ? `（本地時間 ${fmtLocal(o.gustMaxTime)} 發生）` : ""}` +
-        `<br><span style="color:var(--ink-soft)">「今日」以日本時間 0 時起算</span>`
+      ? `今日最大瞬間風速 ${fmtV(o.gustMax, "m/s")}${o.gustMaxTime ? `（${hhmm24(o.gustMaxTime)} 發生）` : ""}`
       : `今日最大瞬間風速 —<span style="color:var(--ink-soft)">（只有颱風附近的測站有）</span>`;
   }
-  return `瞬間風速 ${fmtV(o.gust, "m/s")}${o.gustTime ? `（本地時間 ${fmtLocal(o.gustTime)} 發生）` : ""}`;
+  return `瞬間風速 ${fmtV(o.gust, "m/s")}${o.gustTime ? `（${hhmm24(o.gustTime)} 發生）` : ""}`;
 }
 function obsTip(o) {
   const dir = o.wd === null || o.wd === undefined || (o.ws || 0) < 0.3 ? "靜風" : `${DIR16[Math.round(o.wd / 22.5) % 16]}風（${Math.round(o.wd)}°）`;
