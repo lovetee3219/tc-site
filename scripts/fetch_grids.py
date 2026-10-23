@@ -1,19 +1,25 @@
 """
 下載海溫與海洋熱含量的格點資料，存成網頁可直接讀取的小型二進位檔：
   data/grids/sst.bin + sst.json   海溫（NOAA OISST v2.1 近即時版，0.25°，每日）
-  data/grids/ohc.bin + ohc.json   海洋熱含量（NOAA AOML TCHP 或 NESDIS OHC，0.25°，每日）
+  data/grids/ohc.bin + ohc.json   海洋熱含量（由 Copernicus Marine 全球海洋模式的水溫計算，0.25°，每日；
+                                  失敗時改用 NOAA AOML TCHP 或 NESDIS OHC）
 
 .bin 是 Int16（little-endian），由北往南、由西往東排列；數值 = 原值 × scale，缺值 = -32768。
 網頁讀進來後自己上色，所以色階可以任意設計，滑鼠移上去也能讀到精確數值。
 
 這些資料一天只更新一次，所以 6 小時內抓過就直接沿用快取。
-需要套件：pip install numpy scipy
+需要套件：pip install numpy scipy copernicusmarine
+Copernicus Marine 需要免費帳號，請在 GitHub Secrets 設定
+  COPERNICUSMARINE_SERVICE_USERNAME、COPERNICUSMARINE_SERVICE_PASSWORD
+
+python scripts/fetch_grids.py --cache-only   只用快取或網站上的現有版本，不下載（給每 20 分鐘的「更新測站」用）
 """
 import json
+import os
 import shutil
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +32,7 @@ OUT = ROOT / "data" / "grids"
 CACHE = ROOT / ".cache" / "grids"
 REFRESH_HOURS = 6
 LAT_RANGE = (-60, 60)   # 只需要熱帶與副熱帶
+OHC_LAT_RANGE = (-45, 50)   # 海洋熱含量只在熱帶有意義，範圍小一點可少下載很多資料
 
 SST_SOURCES = [
     ("NOAA OISST v2.1（近即時）",
@@ -33,6 +40,7 @@ SST_SOURCES = [
      "?sst[(last)][(0.0)][({s}):({n})][(-179.875):(179.875)]", "sst"),
 ]
 OHC_SOURCES = [
+    ("Copernicus Marine 全球海洋模式（CMEMS）", None, "cmems"),
     ("NOAA AOML 熱帶氣旋熱潛勢（TCHP）",
      "https://erddap.aoml.noaa.gov/hdb/erddap/griddap/TCHP.nc"
      "?Tropical_Cyclone_Heat_Potential[(last)][({s}):({n})][(-180.0):(180.0)]", "Tropical_Cyclone_Heat_Potential"),
@@ -64,6 +72,45 @@ def read_nc(raw, var):
     return datetime.fromtimestamp(t, timezone.utc), lat, lon, data
 
 
+def cmems_ohc():
+    """
+    用 Copernicus Marine 全球海洋分析（1/12°、每日平均）的水溫剖面計算海洋熱含量：
+      OHC = ρ × cp × ∫ max(T − 26°C, 0) dz（從海面積分到 26°C 等溫線）
+    為了省記憶體，先把水平解析度平均成 0.25° 再積分。
+    """
+    if not (os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME") and os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD")):
+        raise RuntimeError("沒有設定 Copernicus Marine 帳號（COPERNICUSMARINE_SERVICE_USERNAME／PASSWORD）")
+    import copernicusmarine
+    RHO, CP = 1025.0, 3993.0          # 海水密度 kg/m³、比熱 J/(kg·K)
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    last = None
+    for back in (1, 2, 3):            # 昨天的分析場最可靠；還沒出來就往前找
+        day = today - timedelta(days=back)
+        try:
+            ds = copernicusmarine.open_dataset(
+                dataset_id="cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m", variables=["thetao"],
+                minimum_longitude=-180, maximum_longitude=180, minimum_latitude=OHC_LAT_RANGE[0], maximum_latitude=OHC_LAT_RANGE[1],
+                minimum_depth=0, maximum_depth=400, start_datetime=day, end_datetime=day,
+                coordinates_selection_method="nearest")
+            T = ds["thetao"].isel(time=0)
+            T = T.coarsen(latitude=3, longitude=3, boundary="trim").mean().load()
+            break
+        except Exception as e:
+            last = e
+            print(f"  CMEMS {day:%Y-%m-%d} 讀取失敗：{str(e)[:120]}")
+    else:
+        raise RuntimeError(f"CMEMS 最近 3 天都讀不到：{last}")
+    z = T["depth"].values.astype(float)
+    edges = np.concatenate([[0.0], (z[1:] + z[:-1]) / 2, [z[-1] + (z[-1] - z[-2]) / 2]])
+    dz = np.diff(edges)[:, None, None]
+    t = T.values.astype(float)                       # (depth, lat, lon)
+    surface_nan = np.isnan(t[0])
+    excess = np.nan_to_num(np.clip(t - 26.0, 0, None))
+    ohc = (excess * dz).sum(axis=0) * RHO * CP / 1e7   # J/m² → kJ/cm²
+    ohc[surface_nan] = np.nan                          # 陸地
+    return day, T["latitude"].values.astype(float), T["longitude"].values.astype(float), ohc
+
+
 def encode(name, src_name, when, lat, lon, data, scale, unit):
     if lat[0] < lat[-1]:   # 統一成由北往南
         lat, data = lat[::-1], data[::-1]
@@ -82,9 +129,12 @@ def fetch_product(name):
     best = None
     year = datetime.now(timezone.utc).year
     for src_name, tmpl, var in sources:
-        url = tmpl.format(s=LAT_RANGE[0], n=LAT_RANGE[1], year=year)
         try:
-            when, lat, lon, data = read_nc(http_get(url, timeout=180), var)
+            if var == "cmems":
+                when, lat, lon, data = cmems_ohc()
+            else:
+                url = tmpl.format(s=LAT_RANGE[0], n=LAT_RANGE[1], year=year)
+                when, lat, lon, data = read_nc(http_get(url, timeout=180), var)
         except Exception as e:
             print(f"  {src_name} 失敗：{str(e)[:120]}")
             continue
@@ -118,8 +168,12 @@ def main():
         if cj.exists() and cb.exists():
             fetched = datetime.fromisoformat(json.loads(cj.read_text())["fetched"].replace("Z", "+00:00"))
             fresh = (datetime.now(timezone.utc) - fetched).total_seconds() < REFRESH_HOURS * 3600
+        if "--cache-only" in sys.argv:
+            fresh = cj.exists() and cb.exists()   # 只用現有版本，不下載
         if not fresh:
             try:
+                if "--cache-only" in sys.argv:
+                    raise RuntimeError("--cache-only：不下載")
                 meta, blob = fetch_product(name)
                 cj.write_text(json.dumps(meta, ensure_ascii=False))
                 cb.write_bytes(blob)
