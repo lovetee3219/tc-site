@@ -1091,27 +1091,45 @@ async function openChart(o) {
   const xs = h.t.map(m => m * 60000);
   const pts = arr => arr.map((v, i) => ({ x: xs[i], y: v }));
   // 日本測站的陣風事件：過去 24 小時內每一次出現新的最大瞬間風速，都在實際發生的時刻畫一個點
-  const nearestObs = x => xs.reduce((b, v, i) => Math.abs(v - x) < Math.abs(xs[b] - x) ? i : b, 0);
-  const gustEvents = (h.gx || []).map((m, k) => ({ x: m * 60000, y: h.gv[k], near: nearestObs(m * 60000) }));
+  const gustEvents = (h.gx || []).map((m, k) => ({ x: m * 60000, y: h.gv[k] }));
   chartMsg.textContent = xs.length < 2 ? "資料累積中，目前只有 1 筆。" : "";
   const ink = cssVar("--ink"), soft = cssVar("--ink-soft"), rule = cssVar("--rule");
   const hhmm = v => new Date(v).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
-  // 自訂的滑鼠對應方式：只依「觀測時間」（平均風速那條線的點）找出最接近滑鼠的那一筆，
-  // 再取出各條線在同一筆的數值。陣風點的時間和觀測時間不同（aligned: false），不參與對應，
-  // 否則滑鼠靠近陣風點時，會被誤當成第幾筆觀測而跳到別的時間。
+  // 自訂的滑鼠對應方式：
+  //   滑鼠最靠近某一筆觀測 → 顯示那一筆的平均風速、氣壓（各條線同一筆）
+  //   滑鼠最靠近某個陣風點（aligned: false，時間和觀測不同）→ 灰線移到陣風點，只顯示陣風；
+  //   若剛好同一分鐘也有觀測，才一起列出平均風速與氣壓
   if (!Chart.Interaction.modes.obsTime) {
     Chart.Interaction.modes.obsTime = (c, e) => {
       const pos = Chart.helpers.getRelativePosition(e, c), base = c.getDatasetMeta(0).data;
-      if (!base.length) return [];
-      let best = 0, bd = Infinity;
-      base.forEach((el, i) => { const d = Math.abs(el.x - pos.x); if (d < bd) { bd = d; best = i; } });
-      const items = [];
+      const nearest = els => els.reduce((b, el, i) => {
+        const d = Math.abs(el.x - pos.x);
+        return el.skip || d >= b.d ? b : { i, d };
+      }, { i: -1, d: Infinity });
+      const obsAt = idx => {
+        const items = [];
+        c.data.datasets.forEach((ds, di) => {
+          if (ds.aligned === false || !c.isDatasetVisible(di)) return;
+          const el = c.getDatasetMeta(di).data[idx];
+          if (el) items.push({ element: el, datasetIndex: di, index: idx });
+        });
+        return items;
+      };
+      const ob = nearest(base);
+      let gd = { i: -1, d: Infinity }, gdi = -1;
       c.data.datasets.forEach((ds, di) => {
-        if (ds.aligned === false || !c.isDatasetVisible(di)) return;
-        const el = c.getDatasetMeta(di).data[best];
-        if (el) items.push({ element: el, datasetIndex: di, index: best });
+        if (ds.aligned !== false || !c.isDatasetVisible(di)) return;
+        const n = nearest(c.getDatasetMeta(di).data);
+        if (n.d < gd.d) { gd = n; gdi = di; }
       });
-      return items;
+      if (gdi >= 0 && gd.d <= ob.d) {
+        const gel = c.getDatasetMeta(gdi).data[gd.i];
+        const items = [{ element: gel, datasetIndex: gdi, index: gd.i }];
+        const gx = c.data.datasets[gdi].data[gd.i].x;
+        const same = c.data.datasets[0].data.findIndex(p => Math.abs(p.x - gx) < 60000);
+        return same >= 0 ? items.concat(obsAt(same)) : items;
+      }
+      return ob.i >= 0 ? obsAt(ob.i) : [];
     };
   }
   // 在滑鼠所在的時間點畫一條垂直參考線
@@ -1146,17 +1164,8 @@ async function openChart(o) {
         tooltip: {
           backgroundColor: cssVar("--panel-solid"), titleColor: ink, bodyColor: ink, borderColor: rule, borderWidth: 1,
           padding: 10, boxPadding: 4, titleFont: { size: 13 }, bodyFont: { size: 13 },
-          // 日本測站的陣風點不跟著折線逐筆列出，改由下面的 afterBody 列出這段時間內發生的陣風
-          filter: it => !(o.src === "JMA" && it.datasetIndex === 1),
           callbacks: {
             title: items => new Date(items[0].parsed.x).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }),
-            // 日本測站：列出「最接近這一筆觀測」的陣風點，滑鼠移到陣風點上時就會看到它的數值
-            afterBody: items => {
-              if (o.src !== "JMA" || !items.length || !gustEvents.length) return [];
-              const i = items[0].dataIndex;
-              return gustEvents.filter(e => e.near === i)
-                .map(e => `最大瞬間風速　${e.y.toFixed(1)} m/s（${hhmm24(new Date(e.x).toISOString())} 發生）`);
-            },
             label: c => {
               const name = ["平均風速", o.src === "JMA" ? "最大瞬間風速" : "瞬間風速", "氣壓"][c.datasetIndex];
               const v = c.raw && c.raw.y;
