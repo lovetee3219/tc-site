@@ -254,11 +254,13 @@ def merge_official(storms):
     import src_gfs
     import src_jma
     import src_jtwc
+    import src_weatherlab
     # 第三個值：找不到對應颱風時要不要新增一個。全部設為 True，所以其他海域的颱風也會讀進來；
     # 網站一開始只顯示西北太平洋，其他海域可在左欄勾選。
     tasks = [("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms]), True),
              ("JMA", src_jma.fetch, True), ("CWA", src_cwa.fetch, True),
-             ("GFS", src_gfs.fetch, True), ("ECMWF", src_ecmwf.fetch, True)]
+             ("GFS", src_gfs.fetch, True), ("ECMWF", src_ecmwf.fetch, True),
+             ("Weather Lab", src_weatherlab.fetch, True)]
     for name, fn, create in tasks:
         print("處理", name)
         try:
