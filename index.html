@@ -91,6 +91,12 @@
   .model-init { font-size: 12px; color: var(--ink-soft); font-family: var(--num); letter-spacing: .02em; }
   .model-init.stale { color: var(--warn); }
   .pixelated img { image-rendering: pixelated; }
+  .grid-legend { margin: 2px 0 8px 24px; }
+  .grid-legend .bar { display: flex; height: 10px; border-radius: 2px; overflow: hidden; border: 1px solid var(--rule); }
+  .grid-legend .bar span { flex: 1; }
+  .grid-legend .ticks { position: relative; height: 14px; font-family: var(--num); font-size: 11px; color: var(--ink-soft); }
+  .grid-legend .ticks span { position: absolute; transform: translateX(-50%); top: 1px; }
+  .grid-legend .meta { font-size: 11.5px; color: var(--ink-soft); }
   .obs-icon { background: none; border: 0; }
   .obs-icon svg { overflow: visible; display: block; }
   .grid-label { font-family: var(--num); font-size: 12px; font-weight: 500; color: rgba(255,255,255,.75); text-shadow: 0 0 3px #000; white-space: nowrap; }
@@ -209,7 +215,10 @@
   <section class="group">
     <h2>疊加圖層</h2>
     <label class="row"><input type="checkbox" id="radarToggle"> 雷達回波（RainViewer）</label>
-    <label class="row"><input type="checkbox" id="sstToggle"> 海溫（GHRSST MUR，前一日）</label>
+    <label class="row"><input type="checkbox" id="sstToggle"> 海溫（NOAA OISST）</label>
+    <div class="grid-legend" id="sstLegend" hidden></div>
+    <label class="row"><input type="checkbox" id="ohcToggle"> 海洋熱含量（OHC）</label>
+    <div class="grid-legend" id="ohcLegend" hidden></div>
     <label class="row"><input type="checkbox" id="gridToggle" checked> 經緯線</label>
     <label class="row"><input type="checkbox" id="obsToggle" checked> 測站風標（中央氣象署、日本氣象廳）</label>
     <p class="note" id="obsNote"></p>
@@ -267,7 +276,6 @@ const CONFIG = {
     airmass: { level: 6, layers: ["GOES-West_ABI_Air_Mass", "GOES-East_ABI_Air_Mass", "Himawari_AHI_Air_Mass"] },
     vis:     { level: 7, layers: ["GOES-West_ABI_Band2_Red_Visible_1km", "GOES-East_ABI_Band2_Red_Visible_1km", "Himawari_AHI_Band3_Red_Visible_1km"] },
   },
-  sstLayer: "GHRSST_L4_MUR_Sea_Surface_Temperature",
   // 海陸邊界線：顏色與粗細可自行調整
   coast: {
     color: "#f2d14b",
@@ -309,7 +317,7 @@ L.control.zoom({ position: "topright" }).addTo(map);
 
 // 只畫海陸邊界線（Natural Earth 1:5000 萬海岸線，公有領域資料）
 map.attributionControl.setPrefix(false).addAttribution(
-  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星與海溫：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a>' +
+  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a> · 海溫與海洋熱含量：NOAA' +
   ' · 路徑：<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://www.cwa.gov.tw/">中央氣象署</a>、JTWC、NCAR TCGP、' +
   'Based on data and products of <a href="https://www.ecmwf.int/">ECMWF</a> (CC BY 4.0)、<a href="https://deepmind.google.com/science/weatherlab">Google DeepMind Weather Lab</a>');
 map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
@@ -572,19 +580,112 @@ async function showRadar() {
 }
 document.getElementById("radarToggle").addEventListener("change", showRadar);
 
-/* ---------- 海溫 ---------- */
-let sstLayer = null, sstUrl = null;
-map.createPane("sst").style.zIndex = 240;
-const sstDay = () => new Date(Date.now() - 36 * 3600000).toISOString().slice(0, 10);
-let sstShownDay = null;
-document.getElementById("sstToggle").addEventListener("change", e => {
-  if (sstLayer) { map.removeLayer(sstLayer); sstLayer = null; }
-  if (!e.target.checked) return;
-  const day = sstShownDay = sstDay();
-  sstUrl = `${GIBS}/${CONFIG.sstLayer}/default/${day}/GoogleMapsCompatible_Level7/{z}/{y}/{x}.png`;
-  sstLayer = L.tileLayer(sstUrl,
-    { pane: "sst", maxNativeZoom: 7, maxZoom: 9, opacity: .75 }).addTo(map);
+/* ---------- 海溫與海洋熱含量 ----------
+   資料是網站自己整理的格點檔（data/grids/），在瀏覽器裡依下面的色階上色，
+   所以色階可以任意設計，滑鼠移上去也能讀到精確數值。 */
+const GRID_STYLE = {
+  sst: {
+    toggle: "sstToggle", legend: "sstLegend", label: "海溫", unit: "°C", digits: 1,
+    // [下限, 顏色]：0～26°C 每 1 度一色，26°C 以上每 0.5 度一色（仿 REMSS 海溫圖）
+    levels: [[-99, "#ffffff"], [1, "#ebebf6"], [2, "#d7d7ec"], [3, "#c3c3e4"], [4, "#aeaedb"], [5, "#9c9ad1"],
+      [6, "#8685c9"], [7, "#7472bf"], [8, "#5f5eb8"], [9, "#4b49b0"], [10, "#153a99"], [11, "#1e46a8"],
+      [12, "#2652b8"], [13, "#2f5fc8"], [14, "#376ad6"], [15, "#4883f6"], [16, "#5d9def"], [17, "#72b8e8"],
+      [18, "#87d2e4"], [19, "#9cdedf"], [20, "#adfcda"], [21, "#8fe7a5"], [22, "#78d181"], [23, "#63bd5e"],
+      [24, "#51a83f"], [25, "#419329"], [26, "#ffff54"], [26.5, "#f0d447"], [27, "#e2ad3b"], [27.5, "#d5852f"],
+      [28, "#ca5d25"], [28.5, "#c03b1d"], [29, "#af2418"], [29.5, "#b62c31"], [30, "#c03c56"], [30.5, "#c94c7f"],
+      [31, "#d25ea7"], [31.5, "#dc72ce"], [32, "#e786f8"], [32.5, "#f7cdf5"]],
+    ticks: [0, 5, 10, 15, 20, 25, 28, 31],
+  },
+  ohc: {
+    toggle: "ohcToggle", legend: "ohcLegend", label: "海洋熱含量", unit: "kJ/cm²", digits: 0,
+    // 小於 5 kJ/cm² 的地方（大多是中高緯度）不上色，讓底下的雲圖和海岸線露出來
+    levels: [[-99, null], [5, "#eef4fb"], [10, "#c6dbef"], [20, "#9ecae1"], [30, "#6baed6"], [40, "#4292c6"],
+      [50, "#2ca25f"], [60, "#74c476"], [70, "#c2e699"], [80, "#ffffb2"], [90, "#fed976"], [100, "#feb24c"],
+      [110, "#fd8d3c"], [120, "#fc4e2a"], [130, "#e31a1c"], [140, "#bd0026"], [150, "#c51b8a"], [170, "#7a0177"]],
+    ticks: [0, 50, 100, 150],
+  },
+};
+const hexRgb = h => h ? [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)) : null;
+Object.values(GRID_STYLE).forEach(st => { st.rgb = st.levels.map(([v, c]) => [v, hexRgb(c)]); });
+function gridColor(st, v) {
+  let c = st.rgb[0][1];
+  for (const [lo, rgb] of st.rgb) { if (v >= lo) c = rgb; else break; }
+  return c;
+}
+const grids = {}, gridLayers = {};
+function gridValue(name, lat, lon) {
+  const g = grids[name];
+  if (!g) return null;
+  const m = g.meta, j = Math.round((lat - m.lat0) / m.dlat);
+  if (j < 0 || j >= m.ny) return null;
+  let i = Math.round((((lon + 180) % 360 + 360) % 360 - 180 - m.lon0) / m.dlon);
+  if (m.nx * Math.abs(m.dlon) >= 359) i = ((i % m.nx) + m.nx) % m.nx;   // 全球資料：經度繞一圈
+  if (i < 0 || i >= m.nx) return null;
+  const raw = g.data[j * m.nx + i];
+  return raw === m.missing ? null : raw / m.scale;
+}
+// 每張 256×256 的圖磚：逐點算出經緯度、查值、上色
+const GridCanvas = L.GridLayer.extend({
+  createTile(coords) {
+    const tile = document.createElement("canvas");
+    tile.width = tile.height = 256;
+    const name = this.options.name, st = GRID_STYLE[name];
+    if (!grids[name]) return tile;
+    const ctx = tile.getContext("2d"), img = ctx.createImageData(256, 256), d = img.data, n = 256 * 2 ** coords.z;
+    for (let py = 0; py < 256; py++) {
+      const y = (coords.y * 256 + py + 0.5) / n;
+      const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180 / Math.PI;
+      for (let px = 0; px < 256; px++) {
+        const v = gridValue(name, lat, (coords.x * 256 + px + 0.5) / n * 360 - 180);
+        if (v === null) continue;
+        const c = gridColor(st, v), k = (py * 256 + px) * 4;
+        if (!c) continue;
+        d[k] = c[0]; d[k + 1] = c[1]; d[k + 2] = c[2]; d[k + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return tile;
+  },
 });
+map.createPane("sst").style.zIndex = 240;
+function drawLegend(name) {
+  const st = GRID_STYLE[name], m = grids[name] && grids[name].meta, el = document.getElementById(st.legend);
+  const lo = st.ticks[0], hi = st.levels[st.levels.length - 1][0] + (name === "sst" ? 1 : 20);
+  const blocks = st.levels.map(([v, c], i) => {
+    const a = Math.max(v, lo), b = i + 1 < st.levels.length ? st.levels[i + 1][0] : hi;
+    return `<span style="background:${c || "transparent"};flex:${b - a}"></span>`;
+  }).join("");
+  const ticks = st.ticks.map(t => `<span style="left:${(t - lo) / (hi - lo) * 100}%">${t}</span>`).join("");
+  el.innerHTML = `<div class="bar">${blocks}</div><div class="ticks">${ticks}</div>` +
+    `<div class="meta">${st.unit}・${m ? `${esc(m.source)}，${m.date}` : "讀取中…"}</div>`;
+}
+async function loadGrid(name, force) {
+  const meta = await fetch(`data/grids/${name}.json?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+  if (!force && grids[name] && grids[name].meta.fetched === meta.fetched) return false;
+  const buf = await fetch(`data/grids/${name}.bin?v=${encodeURIComponent(meta.fetched)}`).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); });
+  grids[name] = { meta, data: new Int16Array(buf) };
+  return true;
+}
+Object.entries(GRID_STYLE).forEach(([name, st]) => {
+  document.getElementById(st.toggle).addEventListener("change", async e => {
+    const legend = document.getElementById(st.legend);
+    if (gridLayers[name]) { map.removeLayer(gridLayers[name]); gridLayers[name] = null; }
+    legend.hidden = !e.target.checked;
+    if (!e.target.checked) return;
+    drawLegend(name);
+    try { if (!grids[name]) await loadGrid(name, true); }
+    catch { legend.querySelector(".meta").textContent = "還沒有資料，等「更新資料」執行一次後就會出現。"; return; }
+    if (!e.target.checked) return;
+    drawLegend(name);
+    gridLayers[name] = new GridCanvas({ name, pane: "sst", opacity: 0.85, maxZoom: 9 }).addTo(map);
+  });
+});
+async function refreshGrids() {   // 每小時檢查一次有沒有新的一天的資料
+  for (const name of Object.keys(GRID_STYLE)) {
+    if (!gridLayers[name]) continue;
+    try { if (await loadGrid(name)) { gridLayers[name].redraw(); drawLegend(name); } } catch {}
+  }
+}
 
 /* ---------- 路徑預報 ---------- */
 const KT_SCALE = [ // [下限, 顏色, 標籤]，參考薩菲爾－辛普森等級
@@ -1033,9 +1134,6 @@ function showCoords(ll) {
 }
 
 /* ---------- 游標處的雷達回波與海溫：讀取圖磚上該點的顏色，再對照色表換回數值 ---------- */
-// 海溫色表：NASA GIBS「GHRSST_Sea_Surface_Temperature」，第 0 格 <0°C，之後每格 0.15°C，最後一格 ≥32°C
-const SST_RGB = "43,0,26;45,0,28;48,0,31;51,0,34;53,0,36;56,0,39;59,0,43;63,1,46;66,1,50;69,1,53;72,1,57;75,2,61;78,2,65;81,2,69;85,2,73;88,2,77;91,3,81;95,3,85;98,3,89;101,3,93;105,4,97;108,4,102;112,5,106;115,5,110;118,6,113;120,6,115;121,6,117;122,6,119;121,6,119;120,7,119;117,7,117;114,7,116;111,7,114;107,8,112;103,8,110;98,8,108;94,8,105;90,9,103;86,9,101;81,9,99;77,9,97;73,10,94;69,10,92;65,10,90;61,10,88;57,10,86;53,11,84;48,11,81;44,11,79;40,11,77;37,12,76;34,13,75;32,14,75;30,16,77;30,18,78;30,20,81;30,22,84;30,24,87;30,26,90;31,28,93;30,30,96;30,33,99;31,35,102;31,37,105;31,39,108;31,42,112;31,44,115;31,46,118;31,48,121;31,50,124;31,53,127;31,55,130;32,57,133;32,59,136;32,61,139;32,64,142;32,66,145;32,68,148;32,70,151;33,73,155;33,75,158;33,78,161;33,81,164;34,84,167;34,87,170;35,90,173;35,93,176;36,96,179;36,100,182;37,103,185;37,106,187;38,110,190;38,113,194;39,117,197;40,120,200;40,123,203;41,127,206;41,130,209;42,133,212;42,136,215;42,139,218;43,142,221;43,146,224;44,149,227;44,152,230;45,156,233;46,159,236;46,163,239;47,166,242;48,170,245;48,172,244;47,173,240;46,174,232;45,174,222;43,173,208;41,171,191;39,168,171;37,166,152;35,164,133;32,163,113;30,163,93;27,165,72;25,167,53;26,170,37;28,175,23;32,179,13;38,183,6;45,187,1;55,190,0;66,194,0;76,197,0;87,201,0;98,204,0;109,207,0;120,211,0;131,215,0;142,218,0;153,222,0;165,225,0;176,229,0;187,232,0;197,236,0;208,239,0;219,243,0;229,246,0;237,247,0;243,247,0;248,245,0;252,243,0;254,239,0;255,234,0;255,228,0;255,223,0;255,217,0;255,212,0;255,206,0;255,201,0;255,196,0;255,191,0;255,185,0;255,180,0;255,175,0;255,170,0;255,164,0;255,159,0;255,153,0;255,148,0;255,142,0;255,137,0;255,131,0;254,126,0;253,122,0;252,117,0;251,113,0;250,109,0;248,106,0;246,102,0;244,98,0;242,95,0;240,91,0;238,87,0;236,83,0;234,80,0;232,76,0;230,73,0;228,69,0;226,66,0;224,62,0;222,59,0;220,55,0;218,51,0;216,48,0;213,45,0;210,42,0;206,39,0;202,37,0;197,34,0;192,32,0;187,31,0;181,29,0;176,27,0;171,25,0;166,23,0;161,21,0;156,20,0;151,18,0;145,16,0;140,14,0;135,12,0;130,10,0;124,8,0;120,7,0;115,5,0;110,3,0;107,2,0".split(";").map(t => t.split(",").map(Number));
-const SST_KEY = new Map(SST_RGB.map((c, i) => [c.join(","), i]));
 // 雷達色表：RainViewer「Universal Blue」，從 -10 dBZ 起每格 1 dBZ（RGBA）
 const hex4 = h => [0, 2, 4, 6].map(i => parseInt(h.slice(i, i + 2), 16));
 const RADAR_PAL = [
@@ -1090,14 +1188,9 @@ function radarText(px) {
   const c = nearest(RADAR_PAL, px[0], px[1], px[2], px[3]);
   return c[4] < 5 ? "<b>&lt;5</b> dBZ" : `<b>${c[4]}</b> dBZ${c[5] ? "（雪）" : ""}`;
 }
-function sstText(px) {
-  if (px === "blocked") return "無法讀取";
-  if (px === "empty" || px[3] < 128) return "陸地或無資料";
-  const key = `${px[0]},${px[1]},${px[2]}`;
-  const i = SST_KEY.has(key) ? SST_KEY.get(key) : SST_RGB.indexOf(nearest(SST_RGB, px[0], px[1], px[2]));
-  if (i === 0) return "<b>&lt;0</b> °C";
-  if (i === SST_RGB.length - 1) return "<b>≥32</b> °C";
-  return `<b>${((i - 1) * 0.15 + 0.075).toFixed(1)}</b> °C`;
+function gridText(name, ll) {
+  const st = GRID_STYLE[name], v = gridValue(name, ll.lat, ll.lng);
+  return `<span class="k">${st.label}</span>` + (v === null ? "陸地或無資料" : `<b>${v.toFixed(st.digits)}</b> ${st.unit}`);
 }
 const coordSub = document.getElementById("coordSub");
 let readSeq = 0;
@@ -1105,7 +1198,7 @@ async function updateReadout(ll) {
   const my = ++readSeq;
   const jobs = [];
   if (radarLayer && radarUrl) jobs.push(samplePixel(radarUrl, 7, ll).then(px => `<span class="k">雷達</span>${radarText(px)}`));
-  if (sstLayer && sstUrl) jobs.push(samplePixel(sstUrl, 7, ll).then(px => `<span class="k">海溫</span>${sstText(px)}`));
+  Object.keys(GRID_STYLE).forEach(name => { if (gridLayers[name]) jobs.push(Promise.resolve(gridText(name, ll))); });
   if (!jobs.length) { coordSub.hidden = true; return; }
   const parts = await Promise.all(jobs);
   if (my !== readSeq) return;   // 滑鼠已經移到別處，丟掉過時的結果
@@ -1121,7 +1214,7 @@ map.on("mouseout", () => {
   coordVal.textContent = "移到地圖上"; coordVal.classList.add("idle"); coordSub.hidden = true;
 });
 // 勾選或取消雷達、海溫，以及切換時間時，立刻更新游標處的數值
-["radarToggle", "sstToggle"].forEach(id => document.getElementById(id).addEventListener("change", () => setTimeout(() => lastLL && updateReadout(lastLL), 300)));
+["radarToggle", "sstToggle", "ohcToggle"].forEach(id => document.getElementById(id).addEventListener("change", () => setTimeout(() => lastLL && updateReadout(lastLL), 300)));
 
 /* ---------- 自動更新：網頁開著時，各項資料定期重新讀取 ----------
    衛星雲圖：每 5 分鐘（停在最新一張時會自動跳到新圖）  雷達：每 5 分鐘
@@ -1130,17 +1223,13 @@ function refreshRadar() {
   radarFrames = [];   // 清掉舊的時間清單，下次顯示時重新向 RainViewer 取得
   if (document.getElementById("radarToggle").checked) showRadar();
 }
-function refreshSst() {
-  const cb = document.getElementById("sstToggle");
-  if (cb.checked && sstShownDay !== sstDay()) cb.dispatchEvent(new Event("change"));
-}
 function refreshAll() {
-  refreshLatest(); refreshRadar(); loadObs(); loadTracks(); refreshSst();
+  refreshLatest(); refreshRadar(); loadObs(); loadTracks(); refreshGrids();
 }
 setInterval(refreshRadar, 5 * 60000);
 setInterval(loadObs, 5 * 60000);
 setInterval(loadTracks, 5 * 60000);
-setInterval(refreshSst, 60 * 60000);
+setInterval(refreshGrids, 60 * 60000);
 // 手機切到別的 App 或電腦切換分頁時，計時器可能被暫停；回到網頁時立刻全部更新一次
 let hiddenAt = 0;
 document.addEventListener("visibilitychange", () => {
