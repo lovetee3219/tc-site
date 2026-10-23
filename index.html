@@ -937,13 +937,16 @@ function barbSVG(ws, wd) {
 const fmtV = (v, unit, dig = 1) => v === null || v === undefined ? "—" : `${v.toFixed(dig)} ${unit}`;
 const DIR16 = ["北", "北北東", "東北", "東北東", "東", "東南東", "東南", "南南東", "南", "南南西", "西南", "西南西", "西", "西北西", "西北", "北北西"];
 const hhmm24 = iso => new Date(iso).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+// 本地時間（瀏覽器所在時區）的「月/日 時:分」，例如 10/23 12:40
+const fmtLocal = iso => new Date(iso).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 function gustLine(o) {
   if (o.src === "JMA") {   // 氣象廳只有「今天到目前為止的最大瞬間風速」，沒有每 10 分鐘的值
     return o.gustMax !== null && o.gustMax !== undefined
-      ? `今日最大瞬間風速 ${fmtV(o.gustMax, "m/s")}${o.gustMaxTime ? `（${hhmm24(o.gustMaxTime)} 發生）` : ""}`
+      ? `今日最大瞬間風速 ${fmtV(o.gustMax, "m/s")}${o.gustMaxTime ? `（本地時間 ${fmtLocal(o.gustMaxTime)} 發生）` : ""}` +
+        `<br><span style="color:var(--ink-soft)">「今日」以日本時間 0 時起算</span>`
       : `今日最大瞬間風速 —<span style="color:var(--ink-soft)">（只有颱風附近的測站有）</span>`;
   }
-  return `瞬間風速 ${fmtV(o.gust, "m/s")}${o.gustTime ? `（${hhmm24(o.gustTime)} 發生）` : ""}`;
+  return `瞬間風速 ${fmtV(o.gust, "m/s")}${o.gustTime ? `（本地時間 ${fmtLocal(o.gustTime)} 發生）` : ""}`;
 }
 function obsTip(o) {
   const dir = o.wd === null || o.wd === undefined || (o.ws || 0) < 0.3 ? "靜風" : `${DIR16[Math.round(o.wd / 22.5) % 16]}風（${Math.round(o.wd)}°）`;
@@ -1034,6 +1037,23 @@ function loadChartJs() {
 const chartbox = document.getElementById("chartbox"), chartMsg = document.getElementById("chartMsg");
 document.getElementById("chartClose").addEventListener("click", () => { chartbox.hidden = true; chartStation = null; });
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+// 讀不到某站的歷史資料時，查清單檔判斷原因，給出具體的說明
+async function historyDiagnosis(o, err) {
+  const key = o.src + "_" + o.id;
+  let idx;
+  try { idx = await fetch(`data/history/index.json?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw r.status; return r.json(); }); }
+  catch (e) {
+    return `網站上找不到測站歷史資料的清單（${typeof e === "number" ? "HTTP " + e : "連線失敗"}）。` +
+      "代表最近一次發布時沒有產生歷史資料，請到 Actions 查看「更新測站」最新一次執行的「下載測站觀測」紀錄。";
+  }
+  const when = new Date(idx.updated).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+  if (!idx.stations || !(key in idx.stations)) {
+    return `歷史資料清單（${when} 更新，共 ${idx.count} 站）裡沒有這個測站（代碼 ${key}）。` +
+      "如果是剛出現的測站，下一次更新後就會開始累積。";
+  }
+  return `清單上有這個測站（${idx.stations[key][0]} 筆），但檔案讀取失敗（${typeof err === "number" ? "HTTP " + err : "連線失敗"}）。` +
+    "請把這段文字截圖給我，方便找出原因。";
+}
 let chartStation = null;
 async function openChart(o) {
   chartStation = o;
@@ -1051,7 +1071,7 @@ async function openChart(o) {
     const url = `data/history/${encodeURIComponent(o.src + "_" + o.id)}.json`;
     for (let i = 0; ; i++) {
       try {
-        h = await fetch(`${url}?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+        h = await fetch(`${url}?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw r.status; return r.json(); });
         break;
       } catch (e) {
         if (i >= 2 || my !== chartReq) throw e;
@@ -1059,8 +1079,8 @@ async function openChart(o) {
         await new Promise(r => setTimeout(r, 3000));
       }
     }
-  } catch {
-    if (my === chartReq) chartMsg.textContent = "暫時讀不到這個測站的歷史資料。網站可能正在更新，請過一兩分鐘再點一次；如果是剛出現的測站，資料會從下一次更新開始累積。";
+  } catch (err) {
+    if (my === chartReq) chartMsg.textContent = await historyDiagnosis(o, err);
     return;
   }
   if (my !== chartReq) return;   // 使用者已經點了別的測站
