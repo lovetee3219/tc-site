@@ -15,19 +15,21 @@ LATLON = r"(\d+(?:\.\d+)?)([NS])\s+(\d+(?:\.\d+)?)([EW])"
 
 
 def ddhhmm_to_dt(s, ref):
-    """警報裡的時間只有「日時分」，例如 220000Z，要自己補上年月。"""
+    """
+    警報裡的時間只有「日時分」，例如 220000Z，要自己補上年月。
+    警報時間不可能在未來，所以取「不晚於現在」的最近一個符合的日期（本月、上個月、前兩個月依序試）。
+    舊版會把上個月 28 日的舊警報誤判成本月 28 日（未來），導致已消散的颱風被當成還在活躍。
+    """
     day, hour, minute = int(s[:2]), int(s[2:4]), int(s[4:6])
-    for months_back in (0, 1, -1):
+    for months_back in (0, 1, 2):
         y, m = ref.year, ref.month - months_back
-        if m < 1:
+        while m < 1:
             y, m = y - 1, m + 12
-        if m > 12:
-            y, m = y + 1, m - 12
         try:
             dt = datetime(y, m, day, hour, minute, tzinfo=timezone.utc)
         except ValueError:
             continue
-        if abs(dt - ref) < timedelta(days=20):
+        if dt <= ref + timedelta(hours=3):
             return dt
     raise ValueError("無法判斷警報時間：" + s)
 
@@ -51,7 +53,7 @@ def parse(text, ref=None):
         pts.append({"tau": int(f.group(1)), "lat": la, "lon": lo,
                     "vmax": int(f.group(8)) if f.group(8) else None, "mslp": None})
     name = re.search(r"SUBJ/[A-Z ]*?\d+[A-Z] \(([A-Z\- ]+)\)", t) or re.search(r"\d+[WSPAB] \(([A-Z\- ]+)\) WARNING", t)
-    return init, pts, (name.group(1).title() if name else None)
+    return init, pts, (name.group(1).strip().capitalize() if name else None)
 
 
 def fetch(storm_ids):
@@ -72,6 +74,10 @@ def fetch(storm_ids):
             print(f"  JTWC {sid}：檔案裡找不到警報位置（可能已停止發布警報）")
             continue
         init, pts, name = res
+        if datetime.now(timezone.utc) - init > timedelta(hours=24):
+            # JTWC 停止發布警報後，最後一份警報仍會留在網站上；超過 24 小時沒更新就不採用
+            print(f"  JTWC {sid}：最後一份警報是 {init:%m/%d %HZ}，已超過 24 小時，視為已停止發布")
+            continue
         out.append(item("JTWC",
                         [{"model": "JTWC", "label": "JTWC 官方", "category": "official", "init": to_iso(init), "points": pts}],
                         pts[0]["lat"], pts[0]["lon"], to_iso(init), number=(basin.upper(), num), name=name))

@@ -47,11 +47,48 @@ SOURCES = [
 # 讀取 NCAR 公開 a-deck 目錄，最近 AUTO_HOURS 小時內有更新、編號小於 70 的檔案都視為活躍颱風，
 # 自動加進 SOURCES（不必再手動新增）。設成 0 就關閉自動尋找。
 AUTO_HOURS = 36
+STALE_HOURS = 36   # a-deck 裡最新的資料超過幾小時，就當作已消散
 NCAR = "https://hurricanes.ral.ucar.edu/repository/data/"
 
-# ── 中文譯名備用表 ─────────────────────────────────────────────
-# 中央氣象署還沒發布某個颱風的資料時（例如還在遠洋），從這裡找中文名；找不到就只顯示英文名。
-NAMES_ZH = {"Champi": "薔琵", "In-fa": "烟花"}
+# ── 中文譯名對照表 ─────────────────────────────────────────────
+# 來源：中央氣象署《颱風百問》表 2-1「西北太平洋及南海颱風中文譯名及國際命名對照表」（2026 年 6 月更新）。
+# 中央氣象署有發布某颱風時，以氣象署當下的譯名為準；沒有發布時（例如還在遠洋）才查這張表。
+# 颱風委員會每年會更換部分名字，氣象署更新對照表後，照格式修改這裡即可。
+_NAME_TABLE = """
+丹瑞 高基 娜克莉 科羅旺 翠絲 | Damrey Koki Nakri Krovanh Trases
+天馬 銀杏 風神 杜鵑 木蘭 | Tianma Yinxing Fengshen Dujuan Mulan
+鴻雁 青蛙 海鷗 舒力基 米雷 | Kirogi Gaeguri Kalmaegi Surigae Meari
+鴛鴦 點心 鳳凰 彩雲 青馬 | Yun-yeung Dim-Sum Fung-wong Choi-wan Tsing-ma
+小犬 希比 天琴 小熊 蝎虎 | Koinu Hebi Koto Koguma Tokage
+布拉萬 帕布 洛鞍 薔琵 坡鹿 | Bolaven Pabuk Nokaen Champi Ong-mang
+三巴 蝴蝶 西望洋 煙花 梅花 | Sanba Wutip Penha In-Fa Muifa
+鯉魚 聖帕 鸚鵡 查帕卡 莫柏 | Jelawat Sepat Nuri Cempaka Merbok
+蒂魯 木恩 辛樂克 尼伯特 南瑪都 | Tirou Mun Sinlaku Nepartak Nanmadol
+馬力斯 丹娜絲 哈格比 盧碧 塔拉斯 | Maliksi Danas Hagupit Lupit Talas
+凱米 百合 薔蜜 銀河 核桃 | Gaemi Nari Jangmi Mirinae Hodu
+巴比侖 薇帕 米克拉 妮妲 庫拉 | Prapiroon Wipha Mekkhala Nida Kulap
+瑪莉亞 范斯高 無花果 奧麥斯 洛克 | Maria Francisco Higos Omais Roke
+山神 竹節草 巴威 布袋蓮 桑卡 | Son-Tinh Co-may Bavi Luc-Binh Sonca
+安比 柯羅莎 梅莎 璨樹 尼莎 | Ampil Krosa Maysak Chanthu Nesat
+悟空 白鹿 海神 電母 海棠 | Wukong Bailu Haishen Dianmu Haitang
+雲雀 楊柳 紅霞 蒲公英 蜻蜓 | Jongdari Podul Noul Mindulle Jamjari
+珊珊 玲玲 白海豚 獅子山 榕樹 | Shanshan Lingling Dolphin Lionrock Banyan
+船尾 劍魚 鯨魚 時鐘 山貓 | Tomo Kajiki Kujira Tokei Yamaneko
+麗琵 藍湖 昌鴻 南修 帕卡 | Leepi Nongfa Chan-hom Namtheun Pakhar
+貝碧佳 琵琶 琵鷺 瑪瑙 珊瑚 | Bebinca Peipah Peilou Malou Sanvu
+葡萄桑 塔巴 南卡 妮亞圖 瑪娃 | Pulasan Tapah Nangka Nyatoh Mawar
+蘇力 米塔 沙德爾 沙布爾 谷超 | Soulik Mitag Saudel Sarbul Guchol
+西馬隆 樺加沙 紫檀 阿穆丘 泰利 | Cimaron Ragasa Narra Amuyao Talim
+娜尼 浣熊 簡拉維 古莎莉 大麥 | Narae Neoguri Gaenari Gosari Bori
+布拉帕 博羅依 閃電 芙蓉 卡努 | Burapha Bualoi Atsani Chaba Khanun
+百里嘉 麥德姆 艾陶 艾利 蘭恩 | Barijat Matmo Etau Aere Lan
+花斑 哈隆 班朗 桑達 海星 | Hoaban Halong Bang-lang Songda Saobien
+"""
+_key = lambda en: re.sub(r"[^a-z]", "", en.lower())   # In-Fa、In-fa、IN-FA 都視為同一個
+NAMES_ZH = {}
+for _line in _NAME_TABLE.strip().splitlines():
+    _zh, _en = _line.split("|")
+    NAMES_ZH.update({_key(e): z for z, e in zip(_zh.split(), _en.split())})
 
 
 def discover_sources():
@@ -234,6 +271,15 @@ def build_storm(src):
             print("  會顯示的預報：", " ".join(shown) or "（無）", "｜系集：", "、".join(groups) or "（無）")
         except Exception as e:
             print("  a-deck 失敗：", e)
+    # NCAR 有時會重新整理舊颱風的檔案（檔案時間變新，內容其實是舊的）：
+    # 檔案裡最新的資料超過 STALE_HOURS 小時，就當作已消散，不採用
+    latest = max([f["init"] for f in storm["forecasts"]] + [b["time"] for b in storm["best"]], default=None)
+    if latest:
+        from datetime import datetime, timezone
+        hours = (datetime.now(timezone.utc) - datetime.fromisoformat(latest.replace("Z", "+00:00"))).total_seconds() / 3600
+        if hours > STALE_HOURS:
+            print(f"  檔案最新資料是 {hours:.0f} 小時前，視為已消散，略過")
+            storm["stale"] = True
     if auto_name:
         storm["name_en"] = auto_name
     print("  英文名：", auto_name or "（尚未命名）")
@@ -367,7 +413,9 @@ def filter_active(storms):
     """
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
-    age = lambda iso: (now - datetime.fromisoformat(iso.replace("Z", "+00:00"))).total_seconds() / 3600
+    def age(iso):
+        h = (now - datetime.fromisoformat(iso.replace("Z", "+00:00"))).total_seconds() / 3600
+        return 9999 if h < -6 else h   # 時間在未來（資料有誤）也當作不活躍
     official_ok = any(f["model"] in OFFICIAL for s in storms for f in s["forecasts"])
     keep = []
     for s in storms:
@@ -400,7 +448,7 @@ def jtwc_number(storm):
 def display_name(storm):
     """組成「國際英文名 中文譯名（JTWC 編號）」，例如「Champi 薔琵（29W）」；缺的部分自動省略。"""
     en = storm.get("name_en")
-    zh = storm.get("name_zh") or (NAMES_ZH.get(en) if en else None)
+    zh = storm.get("name_zh") or (NAMES_ZH.get(_key(en)) if en else None)
     num = jtwc_number(storm)
     head = " ".join(x for x in (en, zh) if x)
     if not head:
@@ -415,7 +463,7 @@ def main():
         for src in SOURCES + [d for d in discover_sources() if d["storm"] not in known]:
             print("處理", src["storm"])
             storm = build_storm(src)
-            if storm["best"] or storm["forecasts"]:
+            if not storm.get("stale") and (storm["best"] or storm["forecasts"]):
                 storms.append(storm)
         merge_official(storms)
         storms = filter_active(storms)
