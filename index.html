@@ -724,7 +724,7 @@ function drawForecast(f, color) {
   f.points.forEach((p, i) => {
     const valid = new Date(new Date(f.init).getTime() + p.tau * 3600000).toISOString();
     const m = L.circleMarker(ll[i], { pane: "tracks", radius: f.category === "official" ? 4 : 2.5, color, fillColor: color, fillOpacity: 1, weight: 1 })
-      .bindTooltip(`<b>${esc(f.label)}</b>　+${p.tau} 小時<br>${fmtTime(valid)}${p.vmax ? `<br>最大風速 ${p.vmax} 節` : ""}${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" });
+      .bindTooltip(`<b>${esc(f.label)}</b>　+${p.tau} 小時<br>${fmtTime(valid)}${p.vmax ? `<br>最大風速 ${p.vmax} ${f.wunit === "m/s" ? "m/s" : "節"}` : ""}${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" });
     m.addTo(g);
     // 00、06、12、18Z 的預報點標上本地時間的「日時」（DDHH），畫在點的左側，文字顏色同路徑
     const vt = new Date(valid);
