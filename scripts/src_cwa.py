@@ -84,9 +84,11 @@ def fetch():
         now = best[-1] if best else pts[0]
         name = en.strip().capitalize() or None      # 國際英文名，例如 IN-FA → In-fa
         name_zh = zh.strip() or None                # 中央氣象署的中文譯名，例如 烟花
-        out.append(item("CWA",
-                        [{"model": "RCTP", "label": "CWA 官方", "category": "official", "init": init, "points": pts,
-                          "wunit": "m/s"}],   # 氣象署的風速單位是 m/s
-                        now["lat"], now["lon"], now.get("time", init), name=name, best=best, name_zh=name_zh))
+        it = item("CWA",
+                  [{"model": "RCTP", "label": "CWA 官方", "category": "official", "init": init, "points": pts,
+                    "wunit": "m/s"}],   # 氣象署的風速單位是 m/s
+                  now["lat"], now["lon"], now.get("time", init), name=name, best=best)
+        it["name_zh"] = name_zh   # 另外設定，舊版 src_common.py 也能用
+        out.append(it)
         print(f"  CWA {name} {name_zh or ''}：{len(pts)} 個預報點，{len(best)} 個定位點")
     return out

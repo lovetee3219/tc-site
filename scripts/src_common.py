@@ -36,11 +36,11 @@ def parse_time(s: str) -> datetime:
     return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
 
 
-def item(source, forecasts, lat, lon, time, number=None, name=None, best=None):
+def item(source, forecasts, lat, lon, time, number=None, name=None, best=None, name_zh=None):
     """
     各來源統一回傳這種格式，由 fetch_tracks.py 負責對應到正確的颱風：
       number：("WP", 29) 這種 JTWC 編號；沒有時改用位置比對
       lat/lon/time：目前（分析時刻）的中心位置
     """
-    return {"source": source, "number": number, "name": name, "lat": lat, "lon": lon,
+    return {"source": source, "number": number, "name": name, "name_zh": name_zh, "lat": lat, "lon": lon,
             "time": time, "forecasts": forecasts, "best": best or []}
