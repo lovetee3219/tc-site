@@ -65,9 +65,12 @@ def discover_sources():
         return []
     now = datetime.now(timezone.utc)
     found = []
-    for m in re.finditer(r'href="a(wp|io|sh|ep|cp|al)(\d\d)(\d{4})\.dat".*?(\d{4}-\d\d-\d\d \d\d:\d\d)', html):
+    # 目錄頁的日期可能是「2026-10-23 05:41」或「23-Oct-2026 05:41」兩種寫法
+    pat = r'href="a(wp|io|sh|ep|cp|al)(\d\d)(\d{4})\.dat".*?(\d{4}-\d\d-\d\d \d\d:\d\d|\d\d-[A-Za-z]{3}-\d{4} \d\d:\d\d)'
+    for m in re.finditer(pat, html):
         basin, num, year, mod = m.groups()
-        when = datetime.strptime(mod, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        fmt = "%Y-%m-%d %H:%M" if mod[4] == "-" else "%d-%b-%Y %H:%M"
+        when = datetime.strptime(mod, fmt).replace(tzinfo=timezone.utc)
         if int(num) >= 70 or now - when > timedelta(hours=AUTO_HOURS):
             continue
         fname = f"{basin}{num}{year}.dat"
@@ -253,12 +256,20 @@ def distance_deg(a, b):
     return math.hypot(a["lat"] - b["lat"], dlon * math.cos(math.radians(a["lat"])))
 
 
+def has_number(storm):
+    """颱風代碼裡有沒有 JTWC 編號（例如 WP302026 有；JMA-2 沒有）。"""
+    sid = storm["id"]
+    return len(sid) >= 4 and sid[:2].isalpha() and sid[2:4].isdigit()
+
+
 def attach(storms, it, create=True):
     """把一筆外部來源的預報併入對應的颱風；找不到時，create=True 才新增，否則略過。"""
+    from datetime import datetime, timezone
+    year = datetime.now(timezone.utc).year
     target = None
     if it["number"]:
         basin, num = it["number"]
-        target = next((s for s in storms if s["id"][:2] == basin and s["id"][2:4].isdigit() and int(s["id"][2:4]) == num), None)
+        target = next((s for s in storms if has_number(s) and s["id"][:2] == basin and int(s["id"][2:4]) == num), None)
     if target is None:
         near = [(distance_deg(s["current"], it), s) for s in storms if s.get("current")]
         near = [x for x in near if x[0] < 5]   # 5 度以內視為同一個颱風
@@ -267,12 +278,18 @@ def attach(storms, it, create=True):
     if target is None and not create:
         return None
     if target is None:
-        sid = f"{it['number'][0]}{it['number'][1]:02d}" if it["number"] else f"{it['source']}-{len(storms) + 1}"
+        sid = f"{it['number'][0]}{it['number'][1]:02d}{year}" if it["number"] else f"{it['source']}-{len(storms) + 1}"
         # 沒有 JTWC 編號的只會來自 JMA、CWA，都是西北太平洋
         basin = it["number"][0] if it["number"] else "WP"
         target = {"id": sid, "basin": basin, "name": it["name"] or sid, "best": [], "forecasts": [],
                   "current": {"lat": it["lat"], "lon": it["lon"], "time": it["time"]}}
         storms.append(target)
+    # 原本沒有編號的颱風（只從 JMA、CWA 得知），遇到帶編號的來源（GFS、ECMWF 等）時補上編號，
+    # 之後 JTWC 才知道要下載哪一份警報，名稱也能加上（30W）這類編號
+    if it["number"] and not has_number(target):
+        old = target["id"]
+        target["id"], target["basin"] = f"{it['number'][0]}{it['number'][1]:02d}{year}", it["number"][0]
+        print(f"  （{old} 依編號改為 {target['id']}）")
     codes = {f["model"] for f in it["forecasts"]}
     target["forecasts"] = [f for f in target["forecasts"] if f["model"] not in codes] + it["forecasts"]
     if not target["best"] and it["best"]:
@@ -295,10 +312,11 @@ def merge_official(storms):
     import src_weatherlab
     # 第三個值：找不到對應颱風時要不要新增一個。全部設為 True，所以其他海域的颱風也會讀進來；
     # 網站一開始只顯示西北太平洋，其他海域可在左欄勾選。
-    tasks = [("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms]), True),
-             ("JMA", src_jma.fetch, True), ("CWA", src_cwa.fetch, True),
+    # JTWC 放最後：前面的來源會替颱風補上編號，JTWC 才知道要下載哪幾份警報
+    tasks = [("JMA", src_jma.fetch, True), ("CWA", src_cwa.fetch, True),
              ("GFS", src_gfs.fetch, True), ("ECMWF", src_ecmwf.fetch, True),
-             ("Weather Lab", src_weatherlab.fetch, True)]
+             ("Weather Lab", src_weatherlab.fetch, True),
+             ("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms if has_number(s)]), True)]
     for name, fn, create in tasks:
         print("處理", name)
         try:
