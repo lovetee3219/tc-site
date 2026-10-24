@@ -35,13 +35,14 @@ def num(v):
         return None
 
 
-def fix_point(f, tau):
+def fix_point(f, tau, knots=True):
+    """knots=True：風速換成節（實測路徑上色用）；False：保留氣象署原本的 m/s（預報顯示用）。"""
     lat, lon = num(gk(f, "CoordinateLatitude")), num(gk(f, "CoordinateLongitude"))
     if lat is None or lon is None:
         return None
     w, p = num(gk(f, "MaxWindSpeed")), num(gk(f, "Pressure"))
     return {"tau": tau, "lat": round(lat, 1), "lon": round(lon, 1),
-            "vmax": round(w * MS_TO_KT) if w else None, "mslp": int(p) if p else None}
+            "vmax": (round(w * MS_TO_KT) if knots else w) if w else None, "mslp": int(p) if p else None}
 
 
 def fetch():
@@ -68,7 +69,7 @@ def fetch():
         runs = {}
         for f in as_list(gk(gk(tc, "ForecastData") or {}, "Fix")):
             init, tau = gk(f, "InitialTime"), num(gk(f, "ForecastHour"))
-            p = fix_point(f, int(tau) if tau is not None else None)
+            p = fix_point(f, int(tau) if tau is not None else None, knots=False)
             if init and p and p["tau"] is not None:
                 runs.setdefault(to_iso(parse_time(init)), []).append(p)
         if not runs:
@@ -78,11 +79,14 @@ def fetch():
         # 把起報時刻的分析位置當作第 0 小時，路徑才會從颱風目前位置畫出去
         start = next((b for b in best if b["time"] == init), None)
         if start and pts[0]["tau"] != 0:
-            pts.insert(0, {"tau": 0, **{k: start[k] for k in ("lat", "lon", "vmax", "mslp")}})
+            pts.insert(0, {"tau": 0, "lat": start["lat"], "lon": start["lon"], "mslp": start["mslp"],
+                           "vmax": round(start["vmax"] / MS_TO_KT) if start["vmax"] else None})
         now = best[-1] if best else pts[0]
-        name = f"{en.title()} {zh}".strip() or None
+        name = en.strip().capitalize() or None      # 國際英文名，例如 IN-FA → In-fa
+        name_zh = zh.strip() or None                # 中央氣象署的中文譯名，例如 烟花
         out.append(item("CWA",
-                        [{"model": "RCTP", "label": "CWA 官方", "category": "official", "init": init, "points": pts}],
-                        now["lat"], now["lon"], now.get("time", init), name=name, best=best))
-        print(f"  CWA {name}：{len(pts)} 個預報點，{len(best)} 個定位點")
+                        [{"model": "RCTP", "label": "CWA 官方", "category": "official", "init": init, "points": pts,
+                          "wunit": "m/s"}],   # 氣象署的風速單位是 m/s
+                        now["lat"], now["lon"], now.get("time", init), name=name, best=best, name_zh=name_zh))
+        print(f"  CWA {name} {name_zh or ''}：{len(pts)} 個預報點，{len(best)} 個定位點")
     return out

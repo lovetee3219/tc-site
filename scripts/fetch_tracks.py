@@ -354,6 +354,34 @@ def demo():
     return [{"id": "WP992026", "basin": "WP", "name": "示範颱風（虛構資料）", "demo": True, "best": best, "forecasts": fc}]
 
 
+OFFICIAL = {"JTWC", "RJTD", "RCTP", "OFCL"}
+ACTIVE_HOURS = 18   # 最新資料超過幾小時就視為已經不活躍
+
+
+def filter_active(storms):
+    """
+    只留下目前活躍的熱帶氣旋：
+      西北太平洋：JTWC、JMA、CWA 至少一個單位在 18 小時內還有發布預報（停止發布＝已減弱或消散）
+      其他海域（目前沒有抓官方預報）：任何來源在 18 小時內還有資料
+    如果這次所有官方來源都抓不到（例如網路問題），西北太平洋也改用「任何來源」判斷，避免颱風整批消失。
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    age = lambda iso: (now - datetime.fromisoformat(iso.replace("Z", "+00:00"))).total_seconds() / 3600
+    official_ok = any(f["model"] in OFFICIAL for s in storms for f in s["forecasts"])
+    keep = []
+    for s in storms:
+        off = [f["init"] for f in s["forecasts"] if f["model"] in OFFICIAL]
+        anyt = [f["init"] for f in s["forecasts"]] + ([s["best"][-1]["time"]] if s["best"] else [])
+        wp = (s.get("basin") or s["id"][:2]).upper() == "WP"
+        if wp and official_ok:
+            ok = bool(off) and min(map(age, off)) <= ACTIVE_HOURS
+        else:
+            ok = bool(anyt) and min(map(age, anyt)) <= ACTIVE_HOURS
+        (keep.append(s) if ok else print(f"略過已不活躍的 {s['id']}（{s.get('name_en') or '未命名'}）"))
+    return keep
+
+
 def jtwc_number(storm):
     """由颱風代碼算出 JTWC 編號，例如 WP292026 → 29W。"""
     sid = storm["id"]
@@ -390,6 +418,7 @@ def main():
             if storm["best"] or storm["forecasts"]:
                 storms.append(storm)
         merge_official(storms)
+        storms = filter_active(storms)
     if not storms:
         storms = demo()
         print("沒有任何颱風資料，輸出示範資料。")
