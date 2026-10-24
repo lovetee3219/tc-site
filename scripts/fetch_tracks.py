@@ -47,7 +47,6 @@ SOURCES = [
 # 讀取 NCAR 公開 a-deck 目錄，最近 AUTO_HOURS 小時內有更新、編號小於 70 的檔案都視為活躍颱風，
 # 自動加進 SOURCES（不必再手動新增）。設成 0 就關閉自動尋找。
 AUTO_HOURS = 36
-STALE_HOURS = 36   # a-deck 裡最新的資料超過幾小時，就當作已消散
 NCAR = "https://hurricanes.ral.ucar.edu/repository/data/"
 
 # ── 中文譯名對照表 ─────────────────────────────────────────────
@@ -271,15 +270,13 @@ def build_storm(src):
             print("  會顯示的預報：", " ".join(shown) or "（無）", "｜系集：", "、".join(groups) or "（無）")
         except Exception as e:
             print("  a-deck 失敗：", e)
-    # NCAR 有時會重新整理舊颱風的檔案（檔案時間變新，內容其實是舊的）：
-    # 檔案裡最新的資料超過 STALE_HOURS 小時，就當作已消散，不採用
+    # 只記錄檔案裡最新資料的時間，不在這裡刪掉颱風：
+    # 是否仍活躍，最後統一由 filter_active 依官方預報判斷（避免 NCAR 檔案更新較慢時，把活躍颱風的過去路徑一起丟掉）
     latest = max([f["init"] for f in storm["forecasts"]] + [b["time"] for b in storm["best"]], default=None)
     if latest:
         from datetime import datetime, timezone
         hours = (datetime.now(timezone.utc) - datetime.fromisoformat(latest.replace("Z", "+00:00"))).total_seconds() / 3600
-        if hours > STALE_HOURS:
-            print(f"  檔案最新資料是 {hours:.0f} 小時前，視為已消散，略過")
-            storm["stale"] = True
+        print(f"  檔案最新資料：{hours:.0f} 小時前")
     if auto_name:
         storm["name_en"] = auto_name
     print("  英文名：", auto_name or "（尚未命名）")
@@ -463,7 +460,7 @@ def main():
         for src in SOURCES + [d for d in discover_sources() if d["storm"] not in known]:
             print("處理", src["storm"])
             storm = build_storm(src)
-            if not storm.get("stale") and (storm["best"] or storm["forecasts"]):
+            if storm["best"] or storm["forecasts"]:
                 storms.append(storm)
         merge_official(storms)
         storms = filter_active(storms)
