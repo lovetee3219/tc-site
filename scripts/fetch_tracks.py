@@ -18,6 +18,7 @@ ATCF 是美國 NHC／JTWC 使用、也被許多研究單位採用的標準文字
 import gzip
 import json
 import math
+import re
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -35,16 +36,50 @@ OUT = Path(__file__).resolve().parent.parent / "data" / "tracks.json"
 #   其他海域（西北太平洋 wp、北印度洋 io、南半球 sh）可找研究單位的公開鏡像，
 #   例如 UCAR/NCAR RAL 的熱帶氣旋導引資料，網址請到其網站確認。
 SOURCES = [
-    # 名稱會自動從 ATCF 檔讀取，不需要再填 "name"
-    {"storm": "WP292026",
-     "adeck": "https://hurricanes.ral.ucar.edu/repository/data/adecks_open/awp292026.dat",
-     # b-deck 可以填多個網址，程式會依序嘗試，抓到為止
-     "bdeck": ["https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/bwp292026.dat",
-               "https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/2026/bwp292026.dat"]},
-    # {"storm": "AL092026",
-    #  "adeck": "https://ftp.nhc.noaa.gov/atcf/aid_public/aal092026.dat.gz",
-    #  "bdeck": "https://ftp.nhc.noaa.gov/atcf/btk/bal092026.dat"},
+    # 一般情況不必填：活躍的颱風會自動找出來（見下方 AUTO_HOURS）。
+    # 只有自動尋找漏掉、或想固定追蹤某個颱風時，才在這裡手動加入，例如：
+    # {"storm": "WP292026",
+    #  "adeck": "https://hurricanes.ral.ucar.edu/repository/data/adecks_open/awp292026.dat",
+    #  "bdeck": ["https://hurricanes.ral.ucar.edu/repository/data/bdecks_open/bwp292026.dat"]},
 ]
+
+# ── 自動找出目前活躍的颱風 ─────────────────────────────────────
+# 讀取 NCAR 公開 a-deck 目錄，最近 AUTO_HOURS 小時內有更新、編號小於 70 的檔案都視為活躍颱風，
+# 自動加進 SOURCES（不必再手動新增）。設成 0 就關閉自動尋找。
+AUTO_HOURS = 36
+NCAR = "https://hurricanes.ral.ucar.edu/repository/data/"
+
+# ── 中文譯名備用表 ─────────────────────────────────────────────
+# 中央氣象署還沒發布某個颱風的資料時（例如還在遠洋），從這裡找中文名；找不到就只顯示英文名。
+NAMES_ZH = {"Champi": "薔琵", "In-fa": "烟花"}
+
+
+def discover_sources():
+    from datetime import datetime, timedelta, timezone
+    if AUTO_HOURS <= 0:
+        return []
+    try:
+        html = fetch_text(NCAR + "adecks_open/")
+    except Exception as e:
+        print("自動尋找颱風失敗：", e)
+        return []
+    now = datetime.now(timezone.utc)
+    found = []
+    # 目錄頁的日期可能是「2026-10-23 05:41」或「23-Oct-2026 05:41」兩種寫法
+    pat = r'href="a(wp|io|sh|ep|cp|al)(\d\d)(\d{4})\.dat".*?(\d{4}-\d\d-\d\d \d\d:\d\d|\d\d-[A-Za-z]{3}-\d{4} \d\d:\d\d)'
+    for m in re.finditer(pat, html):
+        basin, num, year, mod = m.groups()
+        fmt = "%Y-%m-%d %H:%M" if mod[4] == "-" else "%d-%b-%Y %H:%M"
+        when = datetime.strptime(mod, fmt).replace(tzinfo=timezone.utc)
+        if int(num) >= 70 or now - when > timedelta(hours=AUTO_HOURS):
+            continue
+        fname = f"{basin}{num}{year}.dat"
+        found.append({"storm": f"{basin.upper()}{num}{year}",
+                      "adeck": f"{NCAR}adecks_open/a{fname}",
+                      "bdeck": [f"{NCAR}bdecks_open/b{fname}", f"{NCAR}bdecks_open/{year}/b{fname}"]})
+    print("自動找到的颱風：", "、".join(s["storm"] for s in found) or "（無）")
+    return found
+
 
 # ── 模式代碼 → 顯示名稱與分類 ──────────────────────────────────
 # category: official（官方）、nwp（數值模式）、ai（AI 模式）
@@ -129,6 +164,9 @@ def parse_atcf(text: str):
 
 
 NOT_NAMES = {"", "INVEST", "NONAME", "UNNAMED", "NAMELESS"}
+# 還沒命名時，JTWC 會用英文數字當名稱（例如 THIRTY、TWENTYNINE），這些不算正式名稱
+NUMBER_WORD = re.compile(r"^(ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|ELEVEN|TWELVE|THIRTEEN|FOURTEEN|"
+                         r"FIFTEEN|SIXTEEN|SEVENTEEN|EIGHTEEN|NINETEEN|TWENTY|THIRTY|FORTY|FIFTY|SIXTY|SEVENTY|EIGHTY|NINETY)+$")
 
 
 def find_name(text: str):
@@ -136,10 +174,11 @@ def find_name(text: str):
     best = ("", None)
     for line in text.splitlines():
         f = [x.strip() for x in line.split(",")]
-        if len(f) > 27 and f[27].upper() not in NOT_NAMES and f[27].replace("-", "").isalpha():
+        if (len(f) > 27 and f[27].upper() not in NOT_NAMES and f[27].replace("-", "").isalpha()
+                and not NUMBER_WORD.match(f[27].upper().replace("-", ""))):
             if f[2] >= best[0]:
                 best = (f[2], f[27])
-    return best[1].title() if best[1] else None
+    return best[1].capitalize() if best[1] else None
 
 
 def latest_runs(runs):
@@ -195,9 +234,9 @@ def build_storm(src):
             print("  會顯示的預報：", " ".join(shown) or "（無）", "｜系集：", "、".join(groups) or "（無）")
         except Exception as e:
             print("  a-deck 失敗：", e)
-    if auto_name:  # 自動抓到的名稱優先，例如「Champi（WP29）」
-        storm["name"] = f"{auto_name}（{src['storm'][:4]}）"
-    print("  名稱：", storm["name"])
+    if auto_name:
+        storm["name_en"] = auto_name
+    print("  英文名：", auto_name or "（尚未命名）")
     set_current(storm)
     return storm
 
@@ -217,12 +256,20 @@ def distance_deg(a, b):
     return math.hypot(a["lat"] - b["lat"], dlon * math.cos(math.radians(a["lat"])))
 
 
+def has_number(storm):
+    """颱風代碼裡有沒有 JTWC 編號（例如 WP302026 有；JMA-2 沒有）。"""
+    sid = storm["id"]
+    return len(sid) >= 4 and sid[:2].isalpha() and sid[2:4].isdigit()
+
+
 def attach(storms, it, create=True):
     """把一筆外部來源的預報併入對應的颱風；找不到時，create=True 才新增，否則略過。"""
+    from datetime import datetime, timezone
+    year = datetime.now(timezone.utc).year
     target = None
     if it["number"]:
         basin, num = it["number"]
-        target = next((s for s in storms if s["id"][:2] == basin and s["id"][2:4].isdigit() and int(s["id"][2:4]) == num), None)
+        target = next((s for s in storms if has_number(s) and s["id"][:2] == basin and int(s["id"][2:4]) == num), None)
     if target is None:
         near = [(distance_deg(s["current"], it), s) for s in storms if s.get("current")]
         near = [x for x in near if x[0] < 5]   # 5 度以內視為同一個颱風
@@ -231,19 +278,27 @@ def attach(storms, it, create=True):
     if target is None and not create:
         return None
     if target is None:
-        sid = f"{it['number'][0]}{it['number'][1]:02d}" if it["number"] else f"{it['source']}-{len(storms) + 1}"
+        sid = f"{it['number'][0]}{it['number'][1]:02d}{year}" if it["number"] else f"{it['source']}-{len(storms) + 1}"
         # 沒有 JTWC 編號的只會來自 JMA、CWA，都是西北太平洋
         basin = it["number"][0] if it["number"] else "WP"
         target = {"id": sid, "basin": basin, "name": it["name"] or sid, "best": [], "forecasts": [],
                   "current": {"lat": it["lat"], "lon": it["lon"], "time": it["time"]}}
         storms.append(target)
+    # 原本沒有編號的颱風（只從 JMA、CWA 得知），遇到帶編號的來源（GFS、ECMWF 等）時補上編號，
+    # 之後 JTWC 才知道要下載哪一份警報，名稱也能加上（30W）這類編號
+    if it["number"] and not has_number(target):
+        old = target["id"]
+        target["id"], target["basin"] = f"{it['number'][0]}{it['number'][1]:02d}{year}", it["number"][0]
+        print(f"  （{old} 依編號改為 {target['id']}）")
     codes = {f["model"] for f in it["forecasts"]}
     target["forecasts"] = [f for f in target["forecasts"] if f["model"] not in codes] + it["forecasts"]
     if not target["best"] and it["best"]:
         target["best"] = it["best"]
         set_current(target)
-    if it["name"] and target["name"] == target["id"]:
-        target["name"] = it["name"]
+    if it.get("name") and not target.get("name_en"):
+        target["name_en"] = it["name"]
+    if it.get("name_zh") and not target.get("name_zh"):
+        target["name_zh"] = it["name_zh"]
     return target
 
 
@@ -257,10 +312,11 @@ def merge_official(storms):
     import src_weatherlab
     # 第三個值：找不到對應颱風時要不要新增一個。全部設為 True，所以其他海域的颱風也會讀進來；
     # 網站一開始只顯示西北太平洋，其他海域可在左欄勾選。
-    tasks = [("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms]), True),
-             ("JMA", src_jma.fetch, True), ("CWA", src_cwa.fetch, True),
+    # JTWC 放最後：前面的來源會替颱風補上編號，JTWC 才知道要下載哪幾份警報
+    tasks = [("JMA", src_jma.fetch, True), ("CWA", src_cwa.fetch, True),
              ("GFS", src_gfs.fetch, True), ("ECMWF", src_ecmwf.fetch, True),
-             ("Weather Lab", src_weatherlab.fetch, True)]
+             ("Weather Lab", src_weatherlab.fetch, True),
+             ("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms if has_number(s)]), True)]
     for name, fn, create in tasks:
         print("處理", name)
         try:
@@ -298,10 +354,37 @@ def demo():
     return [{"id": "WP992026", "basin": "WP", "name": "示範颱風（虛構資料）", "demo": True, "best": best, "forecasts": fc}]
 
 
+def jtwc_number(storm):
+    """由颱風代碼算出 JTWC 編號，例如 WP292026 → 29W。"""
+    sid = storm["id"]
+    if len(sid) < 4 or not sid[2:4].isdigit():
+        return None
+    basin, num = sid[:2].upper(), int(sid[2:4])
+    lon = (storm.get("current") or {}).get("lon", 0)
+    suffix = {"WP": "W", "EP": "E", "CP": "C", "AL": "L"}.get(basin)
+    if basin == "IO":
+        suffix = "A" if lon < 78 else "B"        # 阿拉伯海 A、孟加拉灣 B
+    if basin == "SH":
+        suffix = "P" if 135 <= lon % 360 <= 240 else "S"   # 南太平洋 P、南印度洋 S
+    return f"{num:02d}{suffix}" if suffix else None
+
+
+def display_name(storm):
+    """組成「國際英文名 中文譯名（JTWC 編號）」，例如「Champi 薔琵（29W）」；缺的部分自動省略。"""
+    en = storm.get("name_en")
+    zh = storm.get("name_zh") or (NAMES_ZH.get(en) if en else None)
+    num = jtwc_number(storm)
+    head = " ".join(x for x in (en, zh) if x)
+    if not head:
+        head = "未命名熱帶氣旋"
+    return f"{head}（{num}）" if num else head
+
+
 def main():
     storms = []
     if "--demo" not in sys.argv:
-        for src in SOURCES:
+        known = {s["storm"] for s in SOURCES}
+        for src in SOURCES + [d for d in discover_sources() if d["storm"] not in known]:
             print("處理", src["storm"])
             storm = build_storm(src)
             if storm["best"] or storm["forecasts"]:
@@ -311,6 +394,8 @@ def main():
         storms = demo()
         print("沒有任何颱風資料，輸出示範資料。")
     for s in storms:
+        if not s.get("demo"):
+            s["name"] = display_name(s)
         s.pop("current", None)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     payload = {"updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "storms": storms}
