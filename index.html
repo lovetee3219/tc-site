@@ -221,7 +221,7 @@
     <label class="row"><input type="checkbox" id="ohcToggle"> 海洋熱含量（OHC）</label>
     <div class="grid-legend" id="ohcLegend" hidden></div>
     <label class="row"><input type="checkbox" id="gridToggle" checked> 經緯線</label>
-    <label class="row"><input type="checkbox" id="obsToggle" checked> 測站風標（中央氣象署、日本氣象廳）</label>
+    <label class="row"><input type="checkbox" id="obsToggle" checked> 測站風標（中央氣象署、日本氣象廳、METAR）</label>
     <p class="note" id="obsNote"></p>
   </section>
 
@@ -599,11 +599,11 @@ const GRID_STYLE = {
   },
   ohc: {
     toggle: "ohcToggle", legend: "ohcLegend", label: "海洋熱含量", unit: "kJ/cm²", digits: 0,
-    // 小於 5 kJ/cm² 的地方（大多是中高緯度）不上色，讓底下的雲圖和海岸線露出來
-    levels: [[-99, null], [5, "#eef4fb"], [10, "#c6dbef"], [20, "#9ecae1"], [30, "#6baed6"], [40, "#4292c6"],
-      [50, "#2ca25f"], [60, "#74c476"], [70, "#c2e699"], [80, "#ffffb2"], [90, "#fed976"], [100, "#feb24c"],
-      [110, "#fd8d3c"], [120, "#fc4e2a"], [130, "#e31a1c"], [140, "#bd0026"], [150, "#c51b8a"], [170, "#7a0177"]],
-    ticks: [0, 50, 100, 150],
+    // 色階仿 CMEMS 海洋熱含量圖：0、15、35、50、75、100、150、200、220 kJ/cm² 分段。
+    // 原圖把 0（沒有 26°C 以上海水）畫成黑色；這裡改成不上色，讓底下的雲圖和海岸線露出來
+    levels: [[-99, null], [0.5, "#5ac4c5"], [15, "#5fce91"], [35, "#b0e354"], [50, "#e3db55"], [75, "#ddb24b"],
+      [100, "#e18740"], [150, "#e64e46"], [200, "#dc2f80"], [220, "#f7cdf5"]],
+    ticks: [0, 50, 100, 150, 200],
   },
 };
 const hexRgb = h => h ? [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)) : null;
@@ -724,7 +724,7 @@ function drawForecast(f, color) {
   f.points.forEach((p, i) => {
     const valid = new Date(new Date(f.init).getTime() + p.tau * 3600000).toISOString();
     const m = L.circleMarker(ll[i], { pane: "tracks", radius: f.category === "official" ? 4 : 2.5, color, fillColor: color, fillOpacity: 1, weight: 1 })
-      .bindTooltip(`<b>${esc(f.label)}</b>　+${p.tau} 小時<br>${fmtTime(valid)}${p.vmax ? `<br>最大風速 ${p.vmax} ${f.wunit === "m/s" ? "m/s" : "節"}` : ""}${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" });
+      .bindTooltip(`<b>${esc(f.label)}</b>　+${p.tau} 小時<br>${fmtTime(valid)}${p.vmax ? `<br>最大風速 ${p.vmax} ${(f.wunit || (f.model === "RCTP" ? "m/s" : "")) === "m/s" ? "m/s" : "節"}` : ""}${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" });
     m.addTo(g);
     // 00、06、12、18Z 的預報點標上本地時間的「日時」（DDHH），畫在點的左側，文字顏色同路徑
     const vt = new Date(valid);
@@ -952,10 +952,12 @@ function gustLine(o) {
   }
   return `瞬間風速 ${fmtV(o.gust, "m/s")}${o.gustTime ? `（${hhmm24(o.gustTime)} 發生）` : ""}`;
 }
+// 來源標示；METAR 站另外附上機場代碼，例如「METAR（RCKH）」
+const srcLabel = o => o.src === "CWA" ? "中央氣象署" : o.src === "JMA" ? "日本氣象廳" : `METAR（${esc(o.id)}）`;
 function obsTip(o) {
   const dir = o.wd === null || o.wd === undefined || (o.ws || 0) < 0.3 ? "靜風" : `${DIR16[Math.round(o.wd / 22.5) % 16]}風（${Math.round(o.wd)}°）`;
   const t = new Date(o.time).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
-  return `<b>${esc(o.name)}</b>　<span style="color:var(--ink-soft)">${o.src === "CWA" ? "中央氣象署" : "日本氣象廳"}</span><br>` +
+  return `<b>${esc(o.name)}</b>　<span style="color:var(--ink-soft)">${srcLabel(o)}</span><br>` +
     `平均風速 ${fmtV(o.ws, "m/s")}　${dir}<br>${gustLine(o)}<br>` +
     `氣壓（${o.pType}）${fmtV(o.p, "hPa")}<br><span style="color:var(--ink-soft)">觀測 ${t}（本地時間）</span>`;
 }
@@ -964,7 +966,7 @@ function drawObs() {
   if (!document.getElementById("obsToggle").checked || !obsData.length) return;
   const b = map.getBounds().pad(0.1), taken = new Set();
   // 優先順序：中央氣象署 > 日本有人測站 > 其他 AMeDAS
-  const rank = o => o.src === "CWA" ? 0 : o.manned ? 1 : 2;
+  const rank = o => o.src === "CWA" ? 0 : (o.manned || o.src === "METAR") ? 1 : 2;
   [...obsData].sort((a, c) => rank(a) - rank(c)).forEach(o => {
     if (o.ws === null || o.ws === undefined) return;
     for (const off of [0, -360, 360]) {
@@ -991,7 +993,7 @@ function obsFromCache() {
 }
 let obsRetry = 0;
 function obsNoteText() {
-  const parts = [["CWA", "中央氣象署"], ["JMA", "日本氣象廳"]].map(([src, label]) => {
+  const parts = [["CWA", "中央氣象署"], ["JMA", "日本氣象廳"], ["METAR", "METAR"]].map(([src, label]) => {
     const list = obsData.filter(o => o.src === src);
     if (!list.length) return `${label}：目前沒有資料`;
     const newest = Math.max(...list.map(o => Date.parse(o.time)));
@@ -1064,7 +1066,7 @@ async function openChart(o) {
   const my = ++chartReq;
   chartbox.hidden = false;
   document.getElementById("chartTitle").textContent = o.name;
-  document.getElementById("chartSub").textContent = `${o.src === "CWA" ? "中央氣象署" : "日本氣象廳"}・過去 24 小時・氣壓為${o.pType}氣壓` +
+  document.getElementById("chartSub").textContent = `${srcLabel(o)}・過去 24 小時・氣壓為${o.pType}氣壓` +
     (o.src === "JMA" ? "・陣風點為最大瞬間風速發生時刻" : "");
   chartMsg.textContent = "讀取中…";
   if (chart) { chart.destroy(); chart = null; }
