@@ -131,6 +131,7 @@
   .chartbox[hidden] { display: none; }
   .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
   .chart-head span { color: var(--ink-soft); font-size: 12.5px; }
+  .chart-note { color: var(--warn) !important; }
   .chart-close { font: inherit; border: 0; background: transparent; color: var(--ink-soft); font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
   .chart-close:hover { color: var(--ink); background: var(--rule); }
   .chart-wrap { position: relative; flex: 1; min-height: 0; }
@@ -243,7 +244,7 @@
 
 <section class="chartbox" id="chartbox" hidden aria-label="測站過去 24 小時觀測">
   <div class="chart-head">
-    <div><b id="chartTitle"></b> <span id="chartSub"></span></div>
+    <div><b id="chartTitle"></b> <span id="chartSub"></span> <span id="chartNote" class="chart-note"></span></div>
     <button class="chart-close" id="chartClose" aria-label="關閉圖表">✕</button>
   </div>
   <div class="chart-wrap"><canvas id="chartCanvas"></canvas><p class="note" id="chartMsg"></p></div>
@@ -1060,6 +1061,20 @@ async function historyDiagnosis(o, err) {
   return `清單上有這個測站（${idx.stations[key][0]} 筆），但檔案讀取失敗（${typeof err === "number" ? "HTTP " + err : "連線失敗"}）。` +
     "請把這段文字截圖給我，方便找出原因。";
 }
+// 每個測站最近一次讀到的歷史資料，存在這個瀏覽器裡（超過 2 天的自動清掉）
+const HIST_CACHE = "tc-site-hist:";
+function histCacheGet(key) {
+  try { return JSON.parse(localStorage.getItem(HIST_CACHE + key)); } catch { return null; }
+}
+function histCacheSet(key, h) {
+  try { localStorage.setItem(HIST_CACHE + key, JSON.stringify({ saved: Date.now(), h })); } catch {}
+}
+try {
+  Object.keys(localStorage).filter(k => k.startsWith(HIST_CACHE)).forEach(k => {
+    const v = JSON.parse(localStorage.getItem(k));
+    if (!v || Date.now() - v.saved > 2 * 86400000) localStorage.removeItem(k);
+  });
+} catch {}
 let chartStation = null;
 async function openChart(o) {
   chartStation = o;
@@ -1068,28 +1083,49 @@ async function openChart(o) {
   document.getElementById("chartTitle").textContent = o.name;
   document.getElementById("chartSub").textContent = `${srcLabel(o)}・過去 24 小時・氣壓為${o.pType}氣壓` +
     (o.src === "JMA" ? "・陣風點為最大瞬間風速發生時刻" : "");
+  const key = o.src + "_" + o.id;
+  const note = document.getElementById("chartNote");
+  note.textContent = "";
   chartMsg.textContent = "讀取中…";
-  if (chart) { chart.destroy(); chart = null; }
-  let h;
-  try {
-    await loadChartJs();
-    // 網站剛好在發布新版本時可能暫時讀不到，最多試 3 次、每次間隔 3 秒
-    const url = `data/history/${encodeURIComponent(o.src + "_" + o.id)}.json`;
-    for (let i = 0; ; i++) {
-      try {
-        h = await fetch(`${url}?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw r.status; return r.json(); });
-        break;
-      } catch (e) {
-        if (i >= 2 || my !== chartReq) throw e;
-        chartMsg.textContent = "讀取中…（網站可能正在更新，稍候自動重試）";
-        await new Promise(r => setTimeout(r, 3000));
-      }
+  try { await loadChartJs(); }
+  catch { if (my === chartReq) chartMsg.textContent = "圖表工具載入失敗，請稍後再試。"; return; }
+  if (my !== chartReq) return;
+  // 先畫出這個瀏覽器之前讀過的版本（如果有），讓圖表立刻出現；再去讀最新版本，讀到就換上
+  const cached = histCacheGet(key);
+  if (cached) {
+    drawHistory(o, cached.h);
+    note.textContent = "（更新中…）";
+  }
+  const url = `data/history/${encodeURIComponent(key)}.json`;
+  let h = null, err = null;
+  for (let i = 0; i < 3 && my === chartReq; i++) {
+    try {
+      h = await fetch(`${url}?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw r.status; return r.json(); });
+      break;
+    } catch (e) {
+      err = e;
+      if (i < 2) await new Promise(r => setTimeout(r, 2000));
     }
-  } catch (err) {
-    if (my === chartReq) chartMsg.textContent = await historyDiagnosis(o, err);
-    return;
   }
   if (my !== chartReq) return;   // 使用者已經點了別的測站
+  if (!h) {
+    // 讀不到最新版本（例如網站正在更新）：改用瀏覽器暫存的舊版本
+    try { h = await fetch(url, { cache: "force-cache" }).then(r => { if (!r.ok) throw r.status; return r.json(); }); } catch {}
+  }
+  if (h) {
+    histCacheSet(key, h);
+    note.textContent = "";
+    drawHistory(o, h);
+  } else if (cached) {
+    note.textContent = `（網站更新中，暫時顯示 ${new Date(cached.saved).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false })} 讀到的資料）`;
+  } else {
+    chartMsg.textContent = await historyDiagnosis(o, err);
+  }
+}
+
+// 依歷史資料畫出折線圖
+function drawHistory(o, h) {
+  if (chart) { chart.destroy(); chart = null; }
   const xs = h.t.map(m => m * 60000);
   const pts = arr => arr.map((v, i) => ({ x: xs[i], y: v }));
   // 日本測站的陣風事件：過去 24 小時內每一次出現新的最大瞬間風速，都在實際發生的時刻畫一個點
