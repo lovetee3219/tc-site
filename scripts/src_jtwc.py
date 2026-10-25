@@ -52,6 +52,16 @@ def parse(text, ref=None):
         la, lo = latlon(*f.group(3, 4, 5, 6))
         pts.append({"tau": int(f.group(1)), "lat": la, "lon": lo,
                     "vmax": int(f.group(8)) if f.group(8) else None, "mslp": None})
+    # JTWC 只在備註寫出「目前」的最低中心氣壓，例如 MINIMUM CENTRAL PRESSURE AT 240000Z IS 965 MB；
+    # 預報時點沒有氣壓。依時間對應到同一時刻的預報點（通常是第 0 小時）
+    for pm in re.finditer(r"MINIMUM CENTRAL PRESSURE AT (\d{6})Z IS (\d{3,4}) MB", t):
+        try:
+            tau = round((ddhhmm_to_dt(pm.group(1), ref) - init).total_seconds() / 3600)
+        except ValueError:
+            continue
+        for p in pts:
+            if p["tau"] == tau:
+                p["mslp"] = int(pm.group(2))
     name = re.search(r"SUBJ/[A-Z ]*?\d+[A-Z] \(([A-Z\- ]+)\)", t) or re.search(r"\d+[WSPAB] \(([A-Z\- ]+)\) WARNING", t)
     return init, pts, (name.group(1).strip().capitalize() if name else None)
 

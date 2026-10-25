@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "grids"
 CACHE = ROOT / ".cache" / "grids"
 REFRESH_HOURS = 6
+MAX_DATA_AGE_DAYS = 3
 LAT_RANGE = (-60, 60)   # 只需要熱帶與副熱帶
 OHC_LAT_RANGE = (-45, 50)   # 海洋熱含量只在熱帶有意義，範圍小一點可少下載很多資料
 
@@ -167,7 +168,11 @@ def main():
         fresh = False
         if cj.exists() and cb.exists():
             fetched = datetime.fromisoformat(json.loads(cj.read_text())["fetched"].replace("Z", "+00:00"))
-            fresh = (datetime.now(timezone.utc) - fetched).total_seconds() < REFRESH_HOURS * 3600
+            meta = json.loads(cj.read_text())
+            data_age = (datetime.now(timezone.utc) - datetime.fromisoformat(meta["date"]).replace(tzinfo=timezone.utc)).days
+            # 6 小時內抓過、而且資料本身夠新（3 天內）才沿用快取；
+            # 資料日期很舊（例如來源早已停止更新）就重新下載，讓程式有機會改用其他來源
+            fresh = (datetime.now(timezone.utc) - fetched).total_seconds() < REFRESH_HOURS * 3600 and data_age <= MAX_DATA_AGE_DAYS
         if "--cache-only" in sys.argv:
             fresh = cj.exists() and cb.exists()   # 只用現有版本，不下載
         if not fresh:
@@ -189,7 +194,7 @@ def main():
                         print(f"  網站上也沒有：{e2}")
                         continue
         else:
-            print("  6 小時內已更新過，沿用快取")
+            print("  6 小時內已更新過且資料夠新，沿用快取")
         shutil.copy(cj, OUT / f"{name}.json")
         shutil.copy(cb, OUT / f"{name}.bin")
         m = json.loads(cj.read_text())

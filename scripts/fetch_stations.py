@@ -7,6 +7,9 @@
    瞬間風速只在個別測站的檔案裡，逐站下載太多，所以只替颱風附近的測站下載。
    這是氣象廳網站內部使用的資料，不是正式 API，網址可能變動。
 """
+import csv
+import gzip
+import io
 import json
 import math
 import os
@@ -74,6 +77,74 @@ def fetch_cwa():
             "p": num(we.get("AirPressure")), "pType": "測站",
         })
     print(f"CWA：{len(out)} 站")
+    return out
+
+
+# ── 全球 METAR（機場觀測）──────────────────────────────────
+# 美國航空氣象中心（aviationweather.gov）每分鐘更新的「所有最新 METAR」檔案，免金鑰。
+# 平均風、陣風（只有出現陣風時才有）單位為節，這裡換成 m/s；氣壓用海平面氣壓，沒有時用高度表撥定值換算。
+AWC = "https://aviationweather.gov/data/cache/"
+KT_TO_MS = 0.514444
+
+
+def metar_names():
+    """機場代碼 → 名稱。站名清單一天更新一次，存在快取裡一週更新一次。"""
+    path = ROOT / ".cache" / "metar_names.json"
+    try:
+        d = json.loads(path.read_text())
+        if (datetime.now(timezone.utc).timestamp() - d["_saved"]) < 7 * 86400:
+            return d["names"]
+    except Exception:
+        pass
+    names = {}
+    try:
+        data = json.loads(gzip.decompress(http_get(AWC + "stations.cache.json.gz", timeout=120)))
+        for st in data if isinstance(data, list) else data.get("features", data.get("stations", [])):
+            st = st.get("properties", st) if isinstance(st, dict) else {}
+            code = st.get("icaoId") or st.get("station_id") or st.get("id")
+            name = st.get("site") or st.get("name")
+            if code and name:
+                names[str(code)] = str(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"_saved": datetime.now(timezone.utc).timestamp(), "names": names}))
+    except Exception as e:
+        print("METAR 站名清單下載失敗（改用機場代碼顯示）：", e)
+    return names
+
+
+def fetch_metar():
+    text = gzip.decompress(http_get(AWC + "metars.cache.csv.gz", timeout=120)).decode("utf-8", "replace")
+    lines = text.splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("raw_text"))   # 前幾行是說明文字
+    names = metar_names()
+    out = []
+    for r in csv.DictReader(lines[start:]):
+        try:
+            lat, lon = float(r["latitude"]), float(r["longitude"])
+            ws_kt = num(r.get("wind_speed_kt"))
+        except (TypeError, ValueError, KeyError):
+            continue
+        if ws_kt is None:
+            continue
+        wd = r.get("wind_dir_degrees", "")
+        wd = None if not wd or not wd.strip().isdigit() else float(wd)      # VRB（風向不定）當作沒有風向
+        gust = num(r.get("wind_gust_kt"))
+        p = num(r.get("sea_level_pressure_mb"))
+        if p is None and num(r.get("altim_in_hg")):
+            p = round(num(r.get("altim_in_hg")) * 33.8639, 1)
+        try:
+            t = to_iso(datetime.fromisoformat(r["observation_time"].replace("Z", "+00:00")))
+        except (ValueError, KeyError):
+            continue
+        code = r["station_id"]
+        out.append({
+            "src": "METAR", "id": code, "name": names.get(code, code),
+            "lat": round(lat, 4), "lon": round(lon, 4), "time": t,
+            "ws": round(ws_kt * KT_TO_MS, 1), "wd": wd,
+            "gust": round(gust * KT_TO_MS, 1) if gust else None,
+            "p": p, "pType": "海平面",
+        })
+    print(f"METAR：{len(out)} 站")
     return out
 
 
@@ -317,7 +388,7 @@ def main():
     stations, last, good = [], load_last(), {}
     main.stations = stations
     limit = datetime.now(timezone.utc) - timedelta(hours=MAX_STALE_HOURS)
-    for name, fn in (("CWA", fetch_cwa), ("JMA", fetch_jma)):
+    for name, fn in (("CWA", fetch_cwa), ("JMA", fetch_jma), ("METAR", fetch_metar)):
         try:
             got = fn()
             if not got:
