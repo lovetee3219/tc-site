@@ -53,7 +53,20 @@
     overflow-y: auto; background: var(--panel); backdrop-filter: blur(8px);
     border-radius: 10px; box-shadow: var(--shadow); padding: 16px 16px 8px;
   }
-  .panel h1 { font-size: 19px; font-weight: 700; margin: 0 0 2px; letter-spacing: .02em; }
+  .panel h1 { font-size: 19px; font-weight: 700; margin: 0 0 2px; letter-spacing: .02em; padding-right: 56px; }
+  /* 左側選單的「關閉」與畫面左上角的「開啟」按鈕 */
+  .panel-close {
+    position: absolute; top: 14px; right: 14px; font: inherit; font-size: 13px; padding: 4px 10px;
+    border-radius: 7px; border: 1px solid var(--rule); background: transparent; color: var(--ink-soft); cursor: pointer;
+  }
+  .panel-close:hover { color: var(--ink); border-color: var(--ink-soft); }
+  .panel.closed { display: none; }
+  .open-panel {
+    position: fixed; z-index: 1001; top: calc(12px + env(safe-area-inset-top, 0px)); left: 12px;
+    font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 8px; border: 0;
+    background: var(--panel-solid); color: var(--ink); box-shadow: var(--shadow); cursor: pointer;
+  }
+  .open-panel[hidden] { display: none; }
   .updated { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 12px; }
   .group { border-top: 1px solid var(--rule); padding: 12px 0; }
   .group h2 { font-size: 14px; font-weight: 700; margin: 0 0 8px; }
@@ -176,6 +189,8 @@
     .timebar { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom, 0px)); gap: 10px; padding: 8px 12px; }
     .clock { min-width: 118px; } .clock .utc { font-size: 21px; }
     .leaflet-control-zoom { display: none; }
+    .open-panel { display: none !important; }
+    .panel.closed { display: block; }
     .chartbox { left: 8px; right: 8px; height: 220px; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
   }
   @media (prefers-reduced-motion: reduce) { .panel { transition: none; } }
@@ -185,8 +200,10 @@
 <div id="map" aria-label="地圖"></div>
 
 <button class="toggle-panel" id="togglePanel" aria-expanded="false" aria-controls="panel">圖層</button>
+<button class="open-panel" id="panelOpen" aria-controls="panel" hidden>開啟</button>
 
 <aside class="panel" id="panel">
+  <button class="panel-close" id="panelClose" aria-label="關閉左側選單">關閉</button>
   <h1>熱帶氣旋觀測站</h1>
   <p class="updated" id="updated">讀取資料中…</p>
 
@@ -194,7 +211,7 @@
     <h2>衛星雲圖</h2>
     <div class="seg" role="group" aria-label="衛星頻道">
       <button data-sat="ir" aria-pressed="true">紅外線</button>
-      <button data-sat="airmass" aria-pressed="false">空氣團</button>
+      <button data-sat="truecolor" aria-pressed="false">真實色</button>
       <button data-sat="vis" aria-pressed="false">可見光</button>
       <button data-sat="off" aria-pressed="false">關閉</button>
     </div>
@@ -202,7 +219,7 @@
     <div class="sharp-row">資料來源
       <div class="seg seg2 seg-wide" role="group" aria-label="衛星資料來源">
         <button data-src="gibs" aria-pressed="true">NASA</button>
-        <button data-src="jma" aria-pressed="false">氣象廳</button>
+        <button data-src="jma" aria-pressed="false">向日葵九號</button>
       </div>
     </div>
     <div class="sharp-row">放大後顯示
@@ -268,14 +285,16 @@ const CONFIG = {
   // 氣象廳向日葵全圓盤圖磚（僅涵蓋向日葵視野，最高縮放 5，約 4～5 公里一格）
   jma: {
     level: 5,
-    products: { ir: { label: "紅外線", path: "B13/TBB" }, airmass: { label: "水氣", path: "B08/TBB" }, vis: { label: "可見光", path: "B03/ALBD" } },
+    products: { ir: { label: "紅外線", path: "B13/TBB" }, truecolor: { label: "真實色", path: "REP/ETC" }, vis: { label: "可見光", path: "B03/ALBD" } },
   },
   // NASA GIBS 圖層名稱（可到 NASA Worldview 查更多）
   // 每顆衛星的星下點經度：畫面離衛星太遠時就不下載那顆衛星的圖，節省流量
   satLon: { "GOES-West": -137.2, "GOES-East": -75.2, "Himawari": 140.7 },
   sat: {
     ir:      { level: 6, layers: ["GOES-West_ABI_Band13_Clean_Infrared", "GOES-East_ABI_Band13_Clean_Infrared", "Himawari_AHI_Band13_Clean_Infrared"] },
-    airmass: { level: 6, layers: ["GOES-West_ABI_Air_Mass", "GOES-East_ABI_Air_Mass", "Himawari_AHI_Air_Mass"] },
+    // 真實色：GOES 東／西用 NASA 的 GeoColor（白天真實色、夜間紅外線合成）；
+    // NASA 沒有向日葵的真實色，向日葵範圍改用日本氣象廳的真實色圖（「JMA:」開頭）
+    truecolor: { level: 7, layers: ["GOES-West_ABI_GeoColor", "GOES-East_ABI_GeoColor", "JMA:REP/ETC"] },   // 向日葵畫在最上層
     vis:     { level: 7, layers: ["GOES-West_ABI_Band2_Red_Visible_1km", "GOES-East_ABI_Band2_Red_Visible_1km", "Himawari_AHI_Band3_Red_Visible_1km"] },
   },
   // 海陸邊界線：顏色與粗細可自行調整
@@ -476,7 +495,7 @@ function activeSatLayers() {
   const b = map.getBounds(), w = b.getWest(), e = b.getEast();
   const names = satSource === "jma" ? ["Himawari_JMA"] : CONFIG.sat[satMode].layers;
   return names.filter(name => {
-    const sub = CONFIG.satLon[name.split("_")[0]];
+    const sub = CONFIG.satLon[name.startsWith("JMA:") ? "Himawari" : name.split("_")[0]];
     if (sub === undefined || e - w >= 300) return true;
     for (let lon = w; lon <= e + 5; lon += 5) {
       if (Math.abs((((lon - sub) % 360) + 540) % 360 - 180) < 80) return true;
@@ -487,10 +506,14 @@ function activeSatLayers() {
 function satGroup(i) {
   if (!satGroups[i]) {
     const level = satLevel();
+    // 和 GOES 一起顯示時，向日葵只畫在它看得清楚的範圍（約東經 75～205 度），其餘交給 GOES
+    const jmaLayer = (path, mixed) => L.tileLayer(`https://www.jma.go.jp/bosai/himawari/data/satimg/${jmaTime(times[i])}/fd/${jmaTime(times[i])}/${path}/{z}/{x}/{y}.jpg`, {
+      pane: "sat", maxNativeZoom: CONFIG.jma.level, maxZoom: 9, opacity: 0,
+      bounds: mixed ? [[-70, 75], [70, 205]] : [[-81, 60], [81, 222]],
+    });
     satGroups[i] = L.layerGroup(activeSatLayers().map(name => satSource === "jma"
-      ? L.tileLayer(`https://www.jma.go.jp/bosai/himawari/data/satimg/${jmaTime(times[i])}/fd/${jmaTime(times[i])}/${CONFIG.jma.products[satMode].path}/{z}/{x}/{y}.jpg`, {
-          pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0, bounds: [[-81, 60], [81, 222]],
-        })
+      ? jmaLayer(CONFIG.jma.products[satMode].path)
+      : name.startsWith("JMA:") ? jmaLayer(name.slice(4), true)
       : L.tileLayer(`${GIBS}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
           pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0, bounds: [[-85, -180], [85, 180]],
         })));
@@ -547,12 +570,12 @@ document.getElementById("satOpacity").addEventListener("input", e => { satOpacit
 
 // 切換資料來源：按鈕文字、說明與時間軸都跟著換
 const SAT_NOTE = {
-  gibs: "NASA GIBS：GOES 東／西與向日葵衛星。紅外線約 2 公里、可見光約 1 公里，比較清晰，但通常比實際時間晚 30～60 分鐘。印度洋與非洲上空沒有涵蓋。",
-  jma: "日本氣象廳：只有向日葵衛星（西北太平洋與澳洲一帶）。通常只比實際時間晚 10～20 分鐘，但圖磚較粗，約 4～5 公里一格。",
+  gibs: "NASA GIBS：GOES 東／西與向日葵衛星。紅外線約 2 公里、可見光約 1 公里，比較清晰，但通常比實際時間晚 30～60 分鐘。印度洋與非洲上空沒有涵蓋。" +
+    "真實色：GOES 為 NASA 的 GeoColor（夜間改為紅外線合成）；NASA 沒有向日葵的真實色，該範圍改用日本氣象廳的圖。",
+  jma: "向日葵九號（日本氣象廳提供）：只涵蓋西北太平洋與澳洲一帶。通常只比實際時間晚 10～20 分鐘，但圖磚較粗，約 4～5 公里一格。真實色在夜間會變暗。",
 };
 function applySource() {
   document.querySelectorAll("[data-src]").forEach(x => x.setAttribute("aria-pressed", x.dataset.src === satSource));
-  document.querySelector('[data-sat="airmass"]').textContent = satSource === "jma" ? CONFIG.jma.products.airmass.label : "空氣團";
   document.getElementById("satNote").textContent = SAT_NOTE[satSource];
 }
 document.querySelectorAll("[data-src]").forEach(b => b.addEventListener("click", () => {
@@ -917,6 +940,22 @@ playBtn.addEventListener("click", () => {
 /* ---------- 手機版面板開關 ---------- */
 const panel = document.getElementById("panel"), tp = document.getElementById("togglePanel");
 tp.addEventListener("click", () => { const o = panel.classList.toggle("open"); tp.setAttribute("aria-expanded", o); tp.textContent = o ? "收起" : "圖層"; });
+
+/* ---------- 左側選單的關閉／開啟 ----------
+   電腦：按「關閉」隱藏選單，左上角出現「開啟」；手機：「關閉」等同收起，之後用右上角「圖層」再打開 */
+const panelOpenBtn = document.getElementById("panelOpen");
+const isMobile = () => matchMedia("(max-width: 720px)").matches;
+document.getElementById("panelClose").addEventListener("click", () => {
+  if (isMobile()) { panel.classList.remove("open"); tp.setAttribute("aria-expanded", false); tp.textContent = "圖層"; return; }
+  panel.classList.add("closed");
+  panelOpenBtn.hidden = false;
+  panelOpenBtn.focus();
+});
+panelOpenBtn.addEventListener("click", () => {
+  panel.classList.remove("closed");
+  panelOpenBtn.hidden = true;
+  document.getElementById("panelClose").focus();
+});
 
 /* ---------- 地面測站風標 ----------
    風標：桿子指向風「吹來」的方向；短羽 = 5 節、長羽 = 10 節、三角旗 = 50 節（國際慣例以節繪製）。
