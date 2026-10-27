@@ -767,9 +767,9 @@ function drawForecast(f, color) {
     const m = L.circleMarker(ll[i], { pane: "tracks", radius: f.category === "official" ? 4 : 2.5, color, fillColor: color, fillOpacity: 1, weight: 1 })
       .bindTooltip(`<b>${esc(f.label)}</b>　+${p.tau} 小時<br>${fmtTime(valid)}${p.vmax ? `<br>最大風速 ${p.vmax} ${(f.wunit || (f.model === "RCTP" ? "m/s" : "")) === "m/s" ? "m/s" : "節"}` : ""}${p.mslp ? `　${p.mslp} hPa` : ""}`, { className: "tc-tip" });
     m.addTo(g);
-    // 00、06、12、18Z 的預報點標上本地時間的「日時」（DDHH），畫在點的左側，文字顏色同路徑
+    // 起報時刻（第 0 小時）與之後每 24 小時的預報點，標上本地時間的「日時」（DDHH），畫在點的左側，文字顏色同路徑
     const vt = new Date(valid);
-    if (p.tau > 0 && vt.getUTCHours() % 6 === 0 && vt.getUTCMinutes() === 0) {
+    if (p.tau % 24 === 0) {
       const ddhh = String(vt.getDate()).padStart(2, "0") + String(vt.getHours()).padStart(2, "0");
       L.marker(ll[i], { pane: "tracks", interactive: false, icon: L.divIcon({
         className: "", iconSize: [0, 0],
