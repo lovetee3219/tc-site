@@ -490,6 +490,23 @@ let satMode = "ir", satOpacity = 0.85, satGroups = [], satKey = "", timer = null
 const satLevel = () => satSource === "jma" ? CONFIG.jma.level : CONFIG.sat[satMode].level;
 map.createPane("sat").style.zIndex = 250;
 
+// 只在指定經度範圍內下載圖磚的圖層，而且「跨越國際換日線」也能正確判斷。
+// Leaflet 內建的 bounds 只認得地圖上的一份經度（例如 -180～180），畫面移到換日線另一側（經度 > 180）時，
+// 會把那一側的圖磚全部當成範圍外而不下載，這就是之前換日線以東沒有雲圖的原因。
+const LonRangeTileLayer = L.TileLayer.extend({
+  _isValidTile(coords) {
+    const n = 2 ** coords.z;
+    if (coords.y < 0 || coords.y >= n) return false;
+    const r = this.options.lonRange;
+    if (!r) return true;
+    const w = coords.x / n * 360 - 180, e = (coords.x + 1) / n * 360 - 180;
+    for (let k = 0; k <= 4; k++) {   // 取圖磚上的幾個經度，換算到範圍附近再比對
+      const lon = w + (e - w) * k / 4, x = ((lon - r[0]) % 360 + 360) % 360 + r[0];
+      if (x <= r[1]) return true;
+    }
+    return false;
+  },
+});
 function activeSatLayers() {
   if (satMode === "off") return [];
   const b = map.getBounds(), w = b.getWest(), e = b.getEast();
@@ -507,15 +524,15 @@ function satGroup(i) {
   if (!satGroups[i]) {
     const level = satLevel();
     // 和 GOES 一起顯示時，向日葵只畫在它看得清楚的範圍（約東經 75～205 度），其餘交給 GOES
-    const jmaLayer = (path, mixed) => L.tileLayer(`https://www.jma.go.jp/bosai/himawari/data/satimg/${jmaTime(times[i])}/fd/${jmaTime(times[i])}/${path}/{z}/{x}/{y}.jpg`, {
+    const jmaLayer = (path, mixed) => new LonRangeTileLayer(`https://www.jma.go.jp/bosai/himawari/data/satimg/${jmaTime(times[i])}/fd/${jmaTime(times[i])}/${path}/{z}/{x}/{y}.jpg`, {
       pane: "sat", maxNativeZoom: CONFIG.jma.level, maxZoom: 9, opacity: 0,
-      bounds: mixed ? [[-70, 75], [70, 205]] : [[-81, 60], [81, 222]],
+      lonRange: mixed ? [75, 205] : [60, 222],
     });
     satGroups[i] = L.layerGroup(activeSatLayers().map(name => satSource === "jma"
       ? jmaLayer(CONFIG.jma.products[satMode].path)
       : name.startsWith("JMA:") ? jmaLayer(name.slice(4), true)
       : L.tileLayer(`${GIBS}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
-          pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0, bounds: [[-85, -180], [85, 180]],
+          pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0,
         })));
   }
   return satGroups[i];
