@@ -68,6 +68,7 @@
   }
   .open-panel[hidden] { display: none; }
   .updated { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 12px; }
+  .log-link { color: var(--accent); white-space: nowrap; }
   .group { border-top: 1px solid var(--rule); padding: 12px 0; }
   .group h2 { font-size: 14px; font-weight: 700; margin: 0 0 8px; }
   .row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 14px; cursor: pointer; }
@@ -205,7 +206,7 @@
 <aside class="panel" id="panel">
   <button class="panel-close" id="panelClose" aria-label="關閉左側選單">關閉</button>
   <h1>熱帶氣旋觀測站</h1>
-  <p class="updated" id="updated">讀取資料中…</p>
+  <p class="updated"><span id="updated">讀取資料中…</span>　<a href="log.html" class="log-link">模式更新紀錄 →</a></p>
 
   <section class="group">
     <h2>衛星雲圖</h2>

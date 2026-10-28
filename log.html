@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>更新紀錄｜熱帶氣旋觀測站</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #eef3f6; --panel: #ffffff; --ink: #13283a; --ink-soft: #4d6273; --rule: #c9d5de;
+    --accent: #0b6e8a; --ok: #1d7a46; --wait: #8a6a00; --bad: #b3401b;
+    --sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+    --num: "Barlow Semi Condensed", "Arial Narrow", var(--sans);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e2232; --panel: #13293a; --ink: #e4edf2; --ink-soft: #9db2c0; --rule: #2a4558;
+      --accent: #5cc4dd; --ok: #6fd39a; --wait: #e8c35a; --bad: #ff9a6b; color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px;
+         padding: calc(20px + env(safe-area-inset-top, 0px)) 16px calc(28px + env(safe-area-inset-bottom, 0px)); }
+  main { max-width: 920px; margin: 0 auto; }
+  a { color: var(--accent); }
+  h1 { font-size: 22px; margin: 6px 0 4px; }
+  .sub { color: var(--ink-soft); font-size: 13.5px; margin: 0 0 16px; line-height: 1.6; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .filters button { font: inherit; font-size: 13.5px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--rule);
+                    background: var(--panel); color: var(--ink); cursor: pointer; }
+  .filters button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+  .summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; }
+  .card b { display: block; font-size: 14px; }
+  .card span { font-size: 12.5px; color: var(--ink-soft); }
+  .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); font-size: 14px; vertical-align: top; }
+  th { font-size: 12.5px; color: var(--ink-soft); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+  td.t { font-family: var(--num); font-size: 15px; white-space: nowrap; }
+  .r-ok { color: var(--ok); font-weight: 700; } .r-wait { color: var(--wait); } .r-bad { color: var(--bad); font-weight: 700; }
+  .note { color: var(--ink-soft); font-size: 13px; }
+  .empty { padding: 24px; text-align: center; color: var(--ink-soft); }
+</style>
+</head>
+<body>
+<main>
+  <a href="./">← 回到地圖</a>
+  <h1>模式資料更新紀錄</h1>
+  <p class="sub" id="sub">讀取中…</p>
+  <div class="summary" id="summary"></div>
+  <div class="filters" id="filters" role="group" aria-label="篩選模式"></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>紀錄時間（本地）</th><th>模式</th><th>結果</th><th>資料起報時間</th><th>說明</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+<script>
+const MODELS = ["ECMWF", "GFS", "AIFS", "FNV3", "WN3C"];
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const local = iso => new Date(iso).toLocaleString("zh-TW", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+const initText = iso => iso ? `${iso.slice(5, 10).replace("-", "/")} ${iso.slice(11, 13)}Z（本地 ${local(iso)}）` : "—";
+const cls = r => r === "更新成功" || r === "已是最新" ? "r-ok" : r === "尚無新資料" ? "r-wait" : "r-bad";
+let entries = [], filter = "全部";
+
+function render() {
+  const list = entries.filter(e => filter === "全部" || e.model === filter).slice().reverse();
+  document.getElementById("rows").innerHTML = list.length ? list.map(e =>
+    `<tr><td class="t">${local(e.time)}</td><td>${esc(e.model)}</td><td class="${cls(e.result)}">${esc(e.result)}</td>` +
+    `<td class="t">${initText(e.init)}</td><td class="note">${esc(e.note)}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">過去 48 小時沒有紀錄</td></tr>`;
+}
+function summary() {
+  document.getElementById("summary").innerHTML = MODELS.map(m => {
+    const ok = entries.filter(e => e.model === m && (e.result === "更新成功" || e.result === "已是最新")).pop();
+    return `<div class="card"><b>${m}</b><span>${ok ? `最近更新：${local(ok.time)}<br>起報 ${initText(ok.init)}` : "48 小時內沒有成功更新"}</span></div>`;
+  }).join("");
+}
+async function load() {
+  try {
+    const d = await fetch(`data/update_log.json?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw r.status; return r.json(); });
+    entries = d.entries || [];
+    document.getElementById("sub").textContent =
+      `紀錄更新於 ${local(d.updated)}。各模式依排程時間嘗試更新，沒有新資料時每 20 分鐘再試，兩小時後放棄；只保留最近 48 小時。`;
+  } catch {
+    document.getElementById("sub").textContent = "還沒有更新紀錄。等「更新資料」用新版程式執行一次後就會出現。";
+  }
+  summary(); render();
+}
+const filters = document.getElementById("filters");
+filters.innerHTML = ["全部", ...MODELS].map(m => `<button aria-pressed="${m === filter}" data-m="${m}">${m}</button>`).join("");
+filters.addEventListener("click", e => {
+  const m = e.target.dataset.m; if (!m) return;
+  filter = m;
+  filters.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m));
+  render();
+});
+load();
+setInterval(load, 5 * 60000);
+</script>
+</body>
+</html>
