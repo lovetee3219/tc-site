@@ -353,9 +353,9 @@ def attach(storms, it, create=True):
 SCHEDULE = {
     "ECMWF": [1, 7, 13, 19],
     "GFS": [5, 11, 17, 23],
-    "AIFS": [1, 7, 13, 19],
-    "FNV3": [2, 8, 14, 20],
-    "WN3C": [2, 8, 14, 20],
+    "AIFS": [0, 6, 12, 18],
+    "FNV3": [1, 7, 13, 19],
+    "WN3C": [1, 7, 13, 19],
 }
 RETRY_MINUTES = 20
 GIVE_UP_HOURS = 2
