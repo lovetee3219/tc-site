@@ -1,20 +1,23 @@
-# 每 3 小時自動執行一次：下載最新路徑資料，存回 data/ 資料夾，並直接發布網站。
-# 你上傳或修改檔案時也會自動執行一次；也可以到 Actions 頁面按「Run workflow」手動執行。
+# 每 20 分鐘執行一次：抓官方預報（JTWC、JMA、CWA）與 NCAR 路徑檔；
+# 各模式（ECMWF、GFS、AIFS、FNV3、WN3C）則依 scripts/fetch_tracks.py 裡 SCHEDULE 的時間更新，
+# 沒有新資料時每 20 分鐘再試，兩小時後放棄。每次的結果都記在網站的「更新紀錄」頁（保留 48 小時）。
+# 上傳檔案或按「Run workflow」手動執行時，所有模式一律立刻更新。
+# 路徑資料不再存進儲存庫（避免儲存庫越長越大），而是放在 GitHub 快取並隨網站發布。
 name: 更新資料
 
 on:
   schedule:
-    - cron: "17 */3 * * *"   # UTC 時間每 3 小時的第 17 分
+    - cron: "5-59/20 * * * *"   # 每小時的 05、25、45 分
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
-# 同一時間只跑一個，避免兩次更新互相覆蓋
+# 和「更新測站」共用同一個佇列，不會同時發布網站
 concurrency:
   group: update-data
   cancel-in-progress: false
@@ -35,37 +38,27 @@ jobs:
       - name: 安裝套件
         run: pip install eccodes ecmwf-opendata numpy scipy copernicusmarine
 
-      - name: 準備海岸線檔案（只有第一次會真的執行）
-        run: python scripts/build_coast.py
-
-      - name: 下載路徑預報
-        run: python scripts/fetch_tracks.py
-        env:
-          CWA_API_KEY: ${{ secrets.CWA_API_KEY }}   # 中央氣象署授權碼，存在 GitHub Secret 裡
-
-      - name: 存回儲存庫
-        # 存回失敗（例如剛好有人同時改了檔案）也不中斷，網站照樣發布，下次執行會再存
-        continue-on-error: true
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/
-          if git diff --cached --quiet; then echo "資料沒有變動"; exit 0; fi
-          git commit -m "自動更新資料 $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # 最多試 3 次：先取得遠端最新版本，資料檔衝突時以這次剛抓的新資料為準
-          for i in 1 2 3; do
-            if git pull --rebase -X theirs origin main && git push origin HEAD:main; then exit 0; fi
-            git rebase --abort 2>/dev/null || true
-            echo "第 $i 次存回失敗，10 秒後重試"; sleep 10
-          done
-          exit 1
-
-      # 測站的過去 24 小時觀測存在 GitHub 的快取裡，每次執行接著累積
+      # 各模式上次的資料、更新狀態、更新紀錄、測站歷史都存在 GitHub 快取，每次執行接著用
       - uses: actions/cache@v5
         with:
           path: .cache
           key: stations-history-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: stations-history-
+
+      - name: 準備海岸線檔案（只有第一次會真的執行）
+        run: python scripts/build_coast.py
+
+      - name: 下載路徑預報
+        id: tracks
+        run: python scripts/fetch_tracks.py
+        continue-on-error: true
+        env:
+          CWA_API_KEY: ${{ secrets.CWA_API_KEY }}
+          FORCE_ALL: ${{ github.event_name != 'schedule' && '1' || '0' }}   # 手動執行或上傳檔案時，全部立刻更新
+
+      - name: 路徑預報失敗時，沿用上一次的版本
+        if: steps.tracks.outcome == 'failure'
+        run: python scripts/restore_published.py
 
       - name: 下載海溫與海洋熱含量（不存進儲存庫，只隨網站發布）
         run: python scripts/fetch_grids.py
@@ -87,7 +80,7 @@ jobs:
           python -c "import sys; sys.path.insert(0, 'scripts'); import fetch_stations as f; u = f.site_url(); open('data/stations.json', 'wb').write(f.http_get(u + 'data/stations.json'))" || echo "網站上也沒有測站資料"
           python -c "import sys; sys.path.insert(0, 'scripts'); import fetch_stations as f; f.save_history([])" || echo "歷史資料也無法產生"
 
-      # ↓ 直接把網站發布出去，不必等 GitHub 另外觸發
+      # ↓ 直接把網站發布出去
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v4
