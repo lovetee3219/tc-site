@@ -26,15 +26,22 @@ BASIN = {"W": "WP", "E": "EP", "C": "CP", "L": "AL", "A": "IO", "B": "IO",
 def download(model, stream, steps, path):
     from ecmwf.opendata import Client
     client = Client(source="ecmwf", model=model, maximum_retries=2, retry_after=10)
-    last = None
+    # 00Z／12Z 與 06Z／18Z 的預報長度不同（例如 240 與 90 小時）。
+    # 每種長度各查一次最新的起報時間，取「最新的那一次起報」，同時間才取較長的那個。
+    best, last = None, None
     for step in steps:
         try:
-            client.retrieve(type="tf", stream=stream, step=step, target=str(path))
-            return True
+            d = client.latest(type="tf", stream=stream, step=step)
+            if best is None or d > best[0]:
+                best = (d, step)
         except Exception as e:
             last = e
-    print(f"  ECMWF {model}/{stream}：找不到檔案（{str(last)[:80]}）")
-    return False
+    if best is None:
+        print(f"  ECMWF {model}/{stream}：找不到檔案（{str(last)[:80]}）")
+        return False
+    d, step = best
+    client.retrieve(type="tf", stream=stream, step=step, date=d.strftime("%Y%m%d"), time=d.hour, target=str(path))
+    return True
 
 
 def _clean(values, n):
@@ -123,10 +130,13 @@ def mean_track(tracks):
     return pts
 
 
-def fetch():
+def fetch(models=None):
+    """models：只抓哪些模式，例如 {"ifs"} 或 {"aifs-single", "aifs-ens"}；None 表示全部。"""
     out = {}
     with tempfile.TemporaryDirectory() as d:
         for model, stream, steps, kind, code, label, cat in PRODUCTS:
+            if models and model not in models:
+                continue
             path = Path(d) / f"{model}-{stream}.bufr"
             if not download(model, stream, steps, path):
                 continue

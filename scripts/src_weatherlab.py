@@ -57,10 +57,13 @@ def parse(text):
     return {k: {m: [p[t] for t in sorted(p)] for m, p in v.items()} for k, v in out.items()}
 
 
-def fetch():
+def fetch(only=None):
+    """only：只抓哪一個模型，例如 "FNV3P2" 或 "WNV3"；None 表示全部。"""
     from fetch_tracks import iso
     storms = {}
     for model, code, label in PRODUCTS:
+        if only and model != only:
+            continue
         try:
             run, mean_text = latest(model)
         except Exception as e:

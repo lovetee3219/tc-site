@@ -18,7 +18,9 @@ ATCF 是美國 NHC／JTWC 使用、也被許多研究單位採用的標準文字
 import gzip
 import json
 import math
+import os
 import re
+import shutil
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -345,6 +347,114 @@ def attach(storms, it, create=True):
     return target
 
 
+# ── 模式資料的更新排程 ─────────────────────────────────────────
+# 各模式在每天固定的時間（UTC）嘗試更新；沒有新資料時，每次執行（約 20 分鐘）再試一次，
+# 兩小時內都沒有就放棄，等下一個排程時間。手動執行「更新資料」或上傳檔案時，一律立刻更新全部。
+SCHEDULE = {
+    "ECMWF": [1, 7, 13, 19],
+    "GFS": [5, 11, 17, 23],
+    "AIFS": [1, 7, 13, 19],
+    "FNV3": [2, 8, 14, 20],
+    "WN3C": [2, 8, 14, 20],
+}
+RETRY_MINUTES = 20
+GIVE_UP_HOURS = 2
+LOG_HOURS = 48
+CACHE = Path(__file__).resolve().parent.parent / ".cache"
+LOG_OUT = OUT.parent / "update_log.json"
+
+
+def _load(path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _latest_init(items):
+    inits = [f["init"] for it in items for f in it.get("forecasts", [])]
+    return max(inits) if inits else None
+
+
+class Scheduler:
+    """記錄每個模式上次成功更新的排程時段，並決定這次要不要去抓；所有結果寫進更新紀錄。"""
+
+    def __init__(self):
+        from datetime import datetime, timezone
+        self.now = datetime.now(timezone.utc)
+        self.force = os.environ.get("FORCE_ALL") == "1"
+        self.state = _load(CACHE / "model_state.json", {})
+        self.log = [e for e in _load(CACHE / "update_log.json", [])
+                    if (self.now - datetime.fromisoformat(e["time"].replace("Z", "+00:00"))).total_seconds() < LOG_HOURS * 3600]
+
+    def slot(self, name):
+        """目前所屬的排程時段（最近一個已經到達的排程時間）。"""
+        from datetime import timedelta
+        for back in range(0, 25):
+            t = (self.now - timedelta(hours=back)).replace(minute=0, second=0, microsecond=0)
+            if t.hour in SCHEDULE[name]:
+                return t
+        return None
+
+    def record(self, name, result, init=None, note=""):
+        self.log.append({"time": self.now.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": name,
+                         "result": result, "init": init, "note": note})
+        print(f"  [{name}] {result}" + (f"（起報 {init}）" if init else "") + (f"：{note}" if note else ""))
+
+    def due(self, name, has_cache):
+        st = self.state.setdefault(name, {})
+        if self.force or not has_cache:
+            return True, "手動更新" if self.force else "第一次執行"
+        slot = self.slot(name)
+        key = slot.strftime("%Y-%m-%dT%HZ")
+        if st.get("done_slot") == key:
+            return False, None
+        if (self.now - slot).total_seconds() > GIVE_UP_HOURS * 3600:
+            if st.get("gave_up_slot") != key:
+                st["gave_up_slot"] = key
+                self.record(name, "放棄", note=f"{slot:%HZ} 排程後兩小時內都沒有新資料，等下一個排程時間")
+            return False, None
+        return True, f"{slot:%HZ} 排程"
+
+    def finish(self, name, ok):
+        if ok:
+            self.state.setdefault(name, {})["done_slot"] = self.slot(name).strftime("%Y-%m-%dT%HZ")
+
+    def save(self):
+        CACHE.mkdir(parents=True, exist_ok=True)
+        (CACHE / "model_state.json").write_text(json.dumps(self.state, ensure_ascii=False))
+        (CACHE / "update_log.json").write_text(json.dumps(self.log, ensure_ascii=False))
+        LOG_OUT.parent.mkdir(parents=True, exist_ok=True)
+        LOG_OUT.write_text(json.dumps({"updated": self.now.strftime("%Y-%m-%dT%H:%M:%SZ"), "entries": self.log},
+                                      ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+
+def scheduled_items(sched, name, fn):
+    """依排程決定要不要重新抓；不抓或沒抓到新資料時，沿用上次存下的結果。"""
+    path = CACHE / "sources" / f"{name}.json"
+    cached = _load(path, None)
+    go, why = sched.due(name, cached is not None)
+    if not go:
+        print(f"  [{name}] 不在更新時段（或本時段已完成），沿用上次的資料（起報 {cached and cached.get('init')}）")
+        return cached["items"] if cached else []
+    try:
+        items = fn()
+    except Exception as e:
+        sched.record(name, "失敗", note=f"{why}：{str(e)[:120]}")
+        return cached["items"] if cached else []
+    init = _latest_init(items)
+    old = cached.get("init") if cached else None
+    if items and (old is None or (init and init > old) or sched.force):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"init": init, "items": items}, ensure_ascii=False))
+        sched.finish(name, init is not None and (old is None or init > old))
+        sched.record(name, "更新成功" if (old is None or (init and init > old)) else "已是最新",
+                     init=init, note=why)
+        return items
+    sched.record(name, "尚無新資料", init=old, note=f"{why}，{RETRY_MINUTES} 分鐘後再試")
+    return cached["items"] if cached else items
+
+
 def merge_official(storms):
     """依序抓取各來源。單一來源失敗只會印出訊息，不影響其他來源。"""
     import src_cwa
@@ -353,22 +463,28 @@ def merge_official(storms):
     import src_jma
     import src_jtwc
     import src_weatherlab
-    # 第三個值：找不到對應颱風時要不要新增一個。全部設為 True，所以其他海域的颱風也會讀進來；
-    # 網站一開始只顯示西北太平洋，其他海域可在左欄勾選。
+    sched = Scheduler()
+    # 第三個值：找不到對應颱風時要不要新增一個。
+    # 官方單位（JMA、CWA、JTWC）每次執行都抓；模式依 SCHEDULE 的時間更新。
     # JTWC 放最後：前面的來源會替颱風補上編號，JTWC 才知道要下載哪幾份警報
-    tasks = [("JMA", src_jma.fetch, True), ("CWA", src_cwa.fetch, True),
-             ("GFS", src_gfs.fetch, True), ("ECMWF", src_ecmwf.fetch, True),
-             ("Weather Lab", src_weatherlab.fetch, True),
-             ("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms if has_number(s)]), True)]
-    for name, fn, create in tasks:
+    tasks = [("JMA", src_jma.fetch, None), ("CWA", src_cwa.fetch, None),
+             ("GFS", src_gfs.fetch, "GFS"),
+             ("ECMWF", lambda: src_ecmwf.fetch({"ifs"}), "ECMWF"),
+             ("AIFS", lambda: src_ecmwf.fetch({"aifs-single", "aifs-ens"}), "AIFS"),
+             ("FNV3", lambda: src_weatherlab.fetch("FNV3P2"), "FNV3"),
+             ("WN3C", lambda: src_weatherlab.fetch("WNV3"), "WN3C"),
+             ("JTWC", lambda: src_jtwc.fetch([s["id"] for s in storms if has_number(s)]), None)]
+    for name, fn, sched_name in tasks:
         print("處理", name)
         try:
-            for it in fn():
-                t = attach(storms, it, create)
+            items = scheduled_items(sched, sched_name, fn) if sched_name else fn()
+            for it in items:
+                t = attach(storms, it, True)
                 if t:
                     print(f"  → 併入 {t['id']}")
         except Exception as e:
             print(f"  {name} 失敗：", e)
+    sched.save()
 
 
 def demo():
@@ -475,6 +591,11 @@ def main():
     payload = {"updated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "storms": storms}
     OUT.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print("已寫入", OUT)
+    # 另存一份到快取，讓「更新測站」發布網站時也能帶上最新的路徑資料
+    (CACHE / "published").mkdir(parents=True, exist_ok=True)
+    shutil.copy(OUT, CACHE / "published" / "tracks.json")
+    if LOG_OUT.exists():
+        shutil.copy(LOG_OUT, CACHE / "published" / "update_log.json")
 
 
 if __name__ == "__main__":
