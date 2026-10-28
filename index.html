@@ -291,6 +291,8 @@ const CONFIG = {
   // NASA GIBS 圖層名稱（可到 NASA Worldview 查更多）
   // 每顆衛星的星下點經度：畫面離衛星太遠時就不下載那顆衛星的圖，節省流量
   satLon: { "GOES-West": -137.2, "GOES-East": -75.2, "Himawari": 140.7 },
+  // 每顆衛星負責的經度範圍（以相鄰兩顆衛星星下點的中間為界），重疊的地方只畫一顆，避免疊出「鬼影」
+  satRange: { "Himawari": [32.75, 181.75], "GOES-West": [181.75, 253.8], "GOES-East": [253.8, 392.75] },
   sat: {
     ir:      { level: 6, layers: ["GOES-West_ABI_Band13_Clean_Infrared", "GOES-East_ABI_Band13_Clean_Infrared", "Himawari_AHI_Band13_Clean_Infrared"] },
     // 真實色：GOES 東／西用 NASA 的 GeoColor（白天真實色、夜間紅外線合成）；
@@ -524,15 +526,16 @@ function activeSatLayers() {
 function satGroup(i) {
   if (!satGroups[i]) {
     const level = satLevel();
-    // 和 GOES 一起顯示時，向日葵只畫在它看得清楚的範圍（約東經 75～205 度），其餘交給 GOES
+    // 和 GOES 一起顯示時，向日葵只畫在 CONFIG.satRange 指定的範圍，其餘交給 GOES
     const jmaLayer = (path, mixed) => new LonRangeTileLayer(`https://www.jma.go.jp/bosai/himawari/data/satimg/${jmaTime(times[i])}/fd/${jmaTime(times[i])}/${path}/{z}/{x}/{y}.jpg`, {
       pane: "sat", maxNativeZoom: CONFIG.jma.level, maxZoom: 9, opacity: 0,
-      lonRange: mixed ? [75, 205] : [60, 222],
+      lonRange: mixed ? CONFIG.satRange.Himawari : [60, 222],
     });
     satGroups[i] = L.layerGroup(activeSatLayers().map(name => satSource === "jma"
       ? jmaLayer(CONFIG.jma.products[satMode].path)
       : name.startsWith("JMA:") ? jmaLayer(name.slice(4), true)
-      : L.tileLayer(`${GIBS}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
+      : new LonRangeTileLayer(`${GIBS}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
+          lonRange: CONFIG.satRange[name.split("_")[0]],
           pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0,
         })));
   }
@@ -565,7 +568,10 @@ function showSatFrame() {
   if (satMode === "off") return;
   const g = satGroup(frame);
   if (!map.hasLayer(g)) g.addTo(map);
-  g.eachLayer(l => l.setOpacity(satOpacity));
+  // 圖層本身完全不透明，透明度改設在整個衛星圖層面板上：
+  // 兩顆衛星交界處的圖磚重疊時，上面那張會完全蓋住下面那張，不會半透明地疊在一起
+  g.eachLayer(l => l.setOpacity(1));
+  map.getPane("sat").style.opacity = satOpacity;
   satGroups.forEach((o, i) => { if (o && i !== frame) o.eachLayer(l => l.setOpacity(0)); });
   whenLoaded(g, pruneSat);   // 新的一張載完才移除舊的，避免閃一下空白
 }
