@@ -92,6 +92,16 @@ for _line in _NAME_TABLE.strip().splitlines():
     NAMES_ZH.update({_key(e): z for z, e in zip(_zh.split(), _en.split())})
 
 
+def season_year(basin, now=None):
+    """
+    JTWC 的颱風季年份：南半球（SH）的颱風季從 7 月開始算下一年，
+    例如 2026 年 10 月形成的南半球颱風，代碼是 SH012027，不是 SH012026。
+    """
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    return now.year + 1 if basin.upper() == "SH" and now.month >= 7 else now.year
+
+
 def discover_sources():
     from datetime import datetime, timedelta, timezone
     if AUTO_HOURS <= 0:
@@ -109,6 +119,10 @@ def discover_sources():
         basin, num, year, mod = m.groups()
         fmt = "%Y-%m-%d %H:%M" if mod[4] == "-" else "%d-%b-%Y %H:%M"
         when = datetime.strptime(mod, fmt).replace(tzinfo=timezone.utc)
+        # 只收「這一季」的檔案：NCAR 有時會更新舊颱風的檔案時間，若不看年份，
+        # 舊颱風（例如上一季南半球的 Awo、Nolo）會被當成活躍颱風抓進來
+        if int(year) != season_year(basin, now):
+            continue
         if int(num) >= 70 or now - when > timedelta(hours=AUTO_HOURS):
             continue
         fname = f"{basin}{num}{year}.dat"
@@ -310,11 +324,13 @@ def has_number(storm):
 def attach(storms, it, create=True):
     """把一筆外部來源的預報併入對應的颱風；找不到時，create=True 才新增，否則略過。"""
     from datetime import datetime, timezone
-    year = datetime.now(timezone.utc).year
     target = None
     if it["number"]:
         basin, num = it["number"]
-        target = next((s for s in storms if has_number(s) and s["id"][:2] == basin and int(s["id"][2:4]) == num), None)
+        year = season_year(basin)
+        # 編號相同還要同一季：南半球去年的 01S 和今年的 01S 是不同的颱風
+        target = next((s for s in storms if has_number(s) and s["id"][:2] == basin and int(s["id"][2:4]) == num
+                       and s["id"][4:8] in ("", str(year))), None)
     if target is None:
         near = [(distance_deg(s["current"], it), s) for s in storms if s.get("current")]
         near = [x for x in near if x[0] < 5]   # 5 度以內視為同一個颱風
@@ -323,7 +339,8 @@ def attach(storms, it, create=True):
     if target is None and not create:
         return None
     if target is None:
-        sid = f"{it['number'][0]}{it['number'][1]:02d}{year}" if it["number"] else f"{it['source']}-{len(storms) + 1}"
+        sid = (f"{it['number'][0]}{it['number'][1]:02d}{season_year(it['number'][0])}" if it["number"]
+               else f"{it['source']}-{len(storms) + 1}")
         # 沒有 JTWC 編號的只會來自 JMA、CWA，都是西北太平洋
         basin = it["number"][0] if it["number"] else "WP"
         target = {"id": sid, "basin": basin, "name": it["name"] or sid, "best": [], "forecasts": [],
@@ -333,7 +350,7 @@ def attach(storms, it, create=True):
     # 之後 JTWC 才知道要下載哪一份警報，名稱也能加上（30W）這類編號
     if it["number"] and not has_number(target):
         old = target["id"]
-        target["id"], target["basin"] = f"{it['number'][0]}{it['number'][1]:02d}{year}", it["number"][0]
+        target["id"], target["basin"] = f"{it['number'][0]}{it['number'][1]:02d}{season_year(it['number'][0])}", it["number"][0]
         print(f"  （{old} 依編號改為 {target['id']}）")
     codes = {f["model"] for f in it["forecasts"]}
     target["forecasts"] = [f for f in target["forecasts"] if f["model"] not in codes] + it["forecasts"]
@@ -536,6 +553,9 @@ def filter_active(storms):
         models = {f["model"]: f["init"] for f in s["forecasts"]}
         anyt = [f["init"] for f in s["forecasts"]] + ([s["best"][-1]["time"]] if s["best"] else [])
         wp = (s.get("basin") or s["id"][:2]).upper() == "WP"
+        if s["best"] and age(s["best"][-1]["time"]) > 7 * 24:
+            print(f"略過 {s['id']}（{s.get('name_en') or '未命名'}）：過去路徑最後一點已超過 7 天，屬於已消散的舊颱風")
+            continue
         others = [t for m, t in models.items() if m not in ("JTWC", "OFCL")] + \
                  ([s["best"][-1]["time"]] if s["best"] else [])
         if wp and official_ok:
@@ -547,7 +567,15 @@ def filter_active(storms):
         else:
             # 其他海域：不採計 JTWC（JTWC 網站上殘留的舊警報可能被誤判成新的），只看模式、NCAR 定位等其他來源
             ok = bool(others) and min(map(age, others)) <= ACTIVE_HOURS
-        (keep.append(s) if ok else print(f"略過已不活躍的 {s['id']}（{s.get('name_en') or '未命名'}）"))
+        if ok:
+            keep.append(s)
+            # 列出保留的依據（各來源最新的時間），方便從紀錄查出「為什麼這個颱風還在」
+            basis = sorted(models.items(), key=lambda kv: kv[1], reverse=True)[:6]
+            last_best = s["best"][-1]["time"] if s["best"] else "無"
+            print(f"保留 {s['id']}（{s.get('name_en') or '未命名'}）：過去路徑最後一點 {last_best}；"
+                  f"各來源最新起報 " + "、".join(f"{m} {t[5:16]}" for m, t in basis))
+        else:
+            print(f"略過已不活躍的 {s['id']}（{s.get('name_en') or '未命名'}）")
     return keep
 
 
