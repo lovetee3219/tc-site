@@ -522,7 +522,7 @@ def filter_active(storms):
     只留下目前活躍的熱帶氣旋。西北太平洋：JTWC、JMA、CWA 任一單位「目前有發布路徑預報」就算活躍：
       JMA、CWA：它們的資料本來就只列出正在發布的颱風，只要這次抓到就算數（不看時間）
       JTWC：停止發布後舊警報仍會留在網站上，所以要求警報在 24 小時內，而且其他來源 24 小時內也有這個颱風的資料
-    其他海域（目前沒有抓官方預報）：任何來源在 ACTIVE_HOURS 小時內還有資料。
+    其他海域（目前沒有抓官方預報）：JTWC 以外的任何來源（模式、NCAR 定位）在 ACTIVE_HOURS 小時內還有資料。
     如果這次所有官方來源都抓不到（例如網路問題），西北太平洋也改用「任何來源」判斷，避免颱風整批消失。
     """
     from datetime import datetime, timezone
@@ -536,16 +536,17 @@ def filter_active(storms):
         models = {f["model"]: f["init"] for f in s["forecasts"]}
         anyt = [f["init"] for f in s["forecasts"]] + ([s["best"][-1]["time"]] if s["best"] else [])
         wp = (s.get("basin") or s["id"][:2]).upper() == "WP"
+        others = [t for m, t in models.items() if m not in ("JTWC", "OFCL")] + \
+                 ([s["best"][-1]["time"]] if s["best"] else [])
         if wp and official_ok:
             # JTWC 只靠自己不夠：另外還要有其他來源（模式、NCAR 定位）在 24 小時內也看得到這個颱風，
             # 以免 JTWC 網站上殘留的舊警報因為日期判讀問題，被當成新警報而讓舊颱風重新出現
-            others = [t for m, t in models.items() if m not in ("JTWC", "OFCL")] + \
-                     ([s["best"][-1]["time"]] if s["best"] else [])
             corroborated = any(age(t) <= 24 for t in others)
             ok = ("RJTD" in models or "RCTP" in models
                   or (corroborated and any(m in models and age(models[m]) <= 24 for m in ("JTWC", "OFCL"))))
         else:
-            ok = bool(anyt) and min(map(age, anyt)) <= ACTIVE_HOURS
+            # 其他海域：不採計 JTWC（JTWC 網站上殘留的舊警報可能被誤判成新的），只看模式、NCAR 定位等其他來源
+            ok = bool(others) and min(map(age, others)) <= ACTIVE_HOURS
         (keep.append(s) if ok else print(f"略過已不活躍的 {s['id']}（{s.get('name_en') or '未命名'}）"))
     return keep
 
