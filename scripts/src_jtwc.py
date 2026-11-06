@@ -6,9 +6,24 @@ JTWC 負責西北太平洋（wp）、北印度洋（io）、南半球（sh）。
 JTWC 網站註明其產品屬公共資訊，可自由使用。
 """
 import re
+import urllib.request
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
-from src_common import http_get, item, to_iso
+from src_common import UA, item, to_iso
+
+
+def get_with_time(url):
+    """下載警報文字檔，同時取得伺服器上的「最後修改時間」（拿不到時為 None）。"""
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        body = r.read()
+        lm = r.headers.get("Last-Modified")
+    try:
+        modified = parsedate_to_datetime(lm).astimezone(timezone.utc) if lm else None
+    except (TypeError, ValueError):
+        modified = None
+    return body, modified
 
 URL = "https://www.metoc.navy.mil/jtwc/products/{basin}{num:02d}{yy}web.txt"
 LATLON = r"(\d+(?:\.\d+)?)([NS])\s+(\d+(?:\.\d+)?)([EW])"
@@ -75,8 +90,10 @@ def fetch(storm_ids):
             continue
         url = URL.format(basin=basin, num=num, yy=year[2:])
         try:
-            text = http_get(url).decode("utf-8", errors="replace")
-            res = parse(text)
+            body, modified = get_with_time(url)
+            # 警報裡的時間只有「日時分」。用檔案的最後修改時間當基準來補年月，
+            # 才不會把上個月同一天（例如 9/28）的舊警報誤當成這個月（10/28）的新警報
+            res = parse(body.decode("utf-8", errors="replace"), ref=modified)
         except Exception as e:
             print(f"  JTWC {sid} 失敗：", e)
             continue
@@ -84,7 +101,11 @@ def fetch(storm_ids):
             print(f"  JTWC {sid}：檔案裡找不到警報位置（可能已停止發布警報）")
             continue
         init, pts, name = res
-        if datetime.now(timezone.utc) - init > timedelta(hours=24):
+        now = datetime.now(timezone.utc)
+        if modified and now - modified > timedelta(hours=24):
+            print(f"  JTWC {sid}：警報檔最後更新於 {modified:%m/%d %H:%MZ}，已超過 24 小時，視為已停止發布")
+            continue
+        if now - init > timedelta(hours=24):
             # JTWC 停止發布警報後，最後一份警報仍會留在網站上；超過 24 小時沒更新就不採用
             print(f"  JTWC {sid}：最後一份警報是 {init:%m/%d %HZ}，已超過 24 小時，視為已停止發布")
             continue
