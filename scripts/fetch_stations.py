@@ -112,6 +112,34 @@ def metar_names():
     return names
 
 
+# 指定一定要顯示的機場：若航空氣象中心的總表裡沒有，另外向美國氣象局逐站下載。
+# 值為（中文名稱, 緯度, 經度）；名稱也會用來取代英文站名。
+EXTRA_METAR = {
+    "RJAW": ("硫磺島", 24.78, 141.32),
+}
+NWS_METAR = "https://tgftp.nws.noaa.gov/data/observations/metar/stations/{}.TXT"
+
+
+def parse_raw_metar(code, text, lat, lon, name):
+    """解讀單站 METAR 原文（第一行是 UTC 時間，第二行是電文），取出風與氣壓。"""
+    import re
+    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    if len(lines) < 2:
+        return None
+    t = datetime.strptime(lines[0], "%Y/%m/%d %H:%M").replace(tzinfo=timezone.utc)
+    raw = " ".join(lines[1:])
+    w = re.search(r"\b(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?(KT|MPS)\b", raw)
+    if not w:
+        return None
+    k = 1.0 if w.group(4) == "MPS" else KT_TO_MS
+    q = re.search(r"\bQ(\d{4})\b", raw)
+    a = re.search(r"\bA(\d{4})\b", raw)
+    p = float(q.group(1)) if q else (round(int(a.group(1)) / 100 * 33.8639, 1) if a else None)
+    return {"src": "METAR", "id": code, "name": name, "lat": lat, "lon": lon, "time": to_iso(t),
+            "ws": round(int(w.group(2)) * k, 1), "wd": None if w.group(1) == "VRB" else float(w.group(1)),
+            "gust": round(int(w.group(3)) * k, 1) if w.group(3) else None, "p": p, "pType": "海平面"}
+
+
 def fetch_metar():
     text = gzip.decompress(http_get(AWC + "metars.cache.csv.gz", timeout=120)).decode("utf-8", "replace")
     lines = text.splitlines()
@@ -144,6 +172,21 @@ def fetch_metar():
             "gust": round(gust * KT_TO_MS, 1) if gust else None,
             "p": p, "pType": "海平面",
         })
+    # 指定的機場：改用中文名稱；總表裡沒有的，逐站補抓
+    have = {st["id"] for st in out}
+    for st in out:
+        if st["id"] in EXTRA_METAR:
+            st["name"] = EXTRA_METAR[st["id"]][0]
+    for code, (name, lat, lon) in EXTRA_METAR.items():
+        if code in have:
+            continue
+        try:
+            st = parse_raw_metar(code, http_get(NWS_METAR.format(code), timeout=30).decode("utf-8", "replace"), lat, lon, name)
+            if st:
+                out.append(st)
+                print(f"METAR：總表沒有 {code}（{name}），已另外補抓")
+        except Exception as e:
+            print(f"METAR：{code}（{name}）補抓失敗：{e}")
     print(f"METAR：{len(out)} 站")
     return out
 
