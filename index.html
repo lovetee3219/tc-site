@@ -230,6 +230,7 @@
       </div>
     </div>
     <p class="note" id="satNote"></p>
+    <label class="row" style="font-size:13.5px"><input type="checkbox" id="ssecToggle" checked> 紅外線使用全球統一色階（SSEC）</label>
     <p class="note" id="irNote"></p>
   </section>
 
@@ -515,6 +516,9 @@ const EUMETVIEW = "https://view.eumetsat.int/geoserver/ows";
 // SSEC 用同一套處理方式產生每顆衛星的紅外線圖（黑白階），拼起來全球色階一致。
 // 程式會先查詢每顆衛星最新的資料時間；查不到或太舊的衛星，自動改回原本的來源（NASA 彩色／EUMETSAT 黑白）。
 const SSEC = "https://realearth.ssec.wisc.edu";
+// SSEC 對沒有金鑰的使用者，每個網路位址每天有下載量上限，超過後圖片會蓋上「Size limit exceeded」字樣。
+// 若向 SSEC 申請了存取金鑰（access key），填在這裡即可提高上限；留空則不使用。
+const SSEC_KEY = "";
 const SSEC_IR = {
   "GOES-West": "G18-ABI-FD-BAND13", "GOES-East": "G19-ABI-FD-BAND13", "Himawari": "HIMAWARI-B13",
   "MTG": "Met11-SEVIRI-FD-BAND09", "IODC": "Met8-SEVIRI-FD-BAND09",
@@ -546,13 +550,22 @@ function ssecTimeFor(sat, t) {
 }
 function ssecLayer(sat, t, level) {
   const tt = ssecTimeFor(sat, t), d = tt.toISOString();
-  return new LonRangeTileLayer(`${SSEC}/tiles/${SSEC_IR[sat]}/${d.slice(0, 10).replace(/-/g, "")}/${d.slice(11, 19).replace(/:/g, "")}/{z}/{x}/{y}.png`, {
+  const key = SSEC_KEY ? `?accesskey=${encodeURIComponent(SSEC_KEY)}` : "";
+  return new LonRangeTileLayer(`${SSEC}/tiles/${SSEC_IR[sat]}/${d.slice(0, 10).replace(/-/g, "")}/${d.slice(11, 19).replace(/:/g, "")}/{z}/{x}/{y}.png${key}`, {
     lonRange: CONFIG.satRange[sat], pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0,
   });
 }
+// 使用者可以關掉 SSEC（例如遇到下載量上限時），改回 NASA 彩色＋EUMETSAT 黑白；選擇會記在瀏覽器裡
+const ssecOn = () => document.getElementById("ssecToggle").checked;
+try { if (localStorage.getItem("tc-site-ssec") === "off") document.getElementById("ssecToggle").checked = false; } catch {}
+document.getElementById("ssecToggle").addEventListener("change", e => {
+  try { localStorage.setItem("tc-site-ssec", e.target.checked ? "on" : "off"); } catch {}
+  updateIrNote(); buildSat(true);
+});
 function updateIrNote() {
   const el = document.getElementById("irNote");
   if (!el) return;
+  if (!ssecOn()) { el.textContent = "紅外線：使用 NASA（彩色）與 EUMETSAT（黑白）。"; return; }
   const n = Object.keys(ssecTimes).length;
   el.textContent = n === Object.keys(SSEC_IR).length
     ? "紅外線：全球統一黑白色階（SSEC RealEarth）。"
@@ -662,7 +675,7 @@ function satGroup(i) {
       if (satSource === "jma") return jmaLayer(CONFIG.jma.products[satMode].path);
       if (name.startsWith("JMA:")) return jmaLayer(name.slice(4), true);
       // 紅外線：有 SSEC 統一色階資料的衛星，優先用 SSEC
-      if (satMode === "ir" && ssecTimes[satKeyOf(name)]) return ssecLayer(satKeyOf(name), times[i], level);
+      if (satMode === "ir" && ssecOn() && ssecTimes[satKeyOf(name)]) return ssecLayer(satKeyOf(name), times[i], level);
       if (name.startsWith("EUM:")) return eumLayer(name, times[i], level);
       if (level <= 6) return gibsLayer(name, level);
       // 1 公里的圖（可見光、真實色）：先顯示 2 公里的版本（張數只有四分之一，很快出現），
