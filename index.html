@@ -335,6 +335,9 @@ const CONFIG = {
 /* ======================================================================== */
 
 const GIBS = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
+// 圖磚改從 gibs-a／b／c 三個別名平行下載：NASA GIBS 不支援 HTTP/2，瀏覽器對同一個網址同時只會下載約 6 張，
+// 分散到三個別名可以同時下載約 18 張（NASA 官方建議的做法）
+const GIBS_TILES = "https://gibs-{s}.earthdata.nasa.gov/wmts/epsg3857/best";
 const map = L.map("map", { worldCopyJump: true, minZoom: 2, maxZoom: 9, zoomControl: false })
   .setView(CONFIG.center, CONFIG.zoom);
 L.control.zoom({ position: "topright" }).addTo(map);
@@ -497,6 +500,17 @@ map.createPane("sat").style.zIndex = 250;
 // Leaflet 內建的 bounds 只認得地圖上的一份經度（例如 -180～180），畫面移到換日線另一側（經度 > 180）時，
 // 會把那一側的圖磚全部當成範圍外而不下載，這就是之前換日線以東沒有雲圖的原因。
 const LonRangeTileLayer = L.TileLayer.extend({
+  options: { keepBuffer: 4 },   // 平移地圖時保留周圍多一點已下載的圖磚，移回來不必重新下載
+  // 圖磚偶爾下載失敗（伺服器忙碌），1.5 秒後自動重試一次，減少「東缺一塊」
+  initialize(url, options) {
+    L.TileLayer.prototype.initialize.call(this, url, options);
+    this.on("tileerror", e => {
+      const t = e.tile;
+      if (t.dataset.retried) return;
+      t.dataset.retried = "1";
+      setTimeout(() => { t.src = t.src.split("?")[0] + "?retry=1"; }, 1500);
+    });
+  },
   _isValidTile(coords) {
     const n = 2 ** coords.z;
     if (coords.y < 0 || coords.y >= n) return false;
@@ -534,8 +548,8 @@ function satGroup(i) {
     satGroups[i] = L.layerGroup(activeSatLayers().map(name => satSource === "jma"
       ? jmaLayer(CONFIG.jma.products[satMode].path)
       : name.startsWith("JMA:") ? jmaLayer(name.slice(4), true)
-      : new LonRangeTileLayer(`${GIBS}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
-          lonRange: CONFIG.satRange[name.split("_")[0]],
+      : new LonRangeTileLayer(`${GIBS_TILES}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
+          lonRange: CONFIG.satRange[name.split("_")[0]], subdomains: "abc",
           pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0,
         })));
   }
@@ -579,10 +593,18 @@ function buildSat(force) {
   const key = satSource + ":" + satMode + ":" + activeSatLayers().join(",") + ":" + gibsTime(times[0]);
   if (!force && key === satKey) return;
   satKey = key;
-  satGroups.forEach(g => g && map.removeLayer(g));
+  // 舊的雲圖先留著，等新的這一張下載完成才移除，換新圖或換頻道時畫面不會先變成一塊塊空白
+  const old = satGroups.filter(Boolean);
   satGroups = [];
   if (timer) times.forEach((_, i) => satGroup(i).addTo(map));
   showSatFrame();
+  const cur = satGroups[frame];
+  const dropOld = () => old.forEach(g => map.removeLayer(g));
+  if (cur && satMode !== "off") {
+    old.forEach(g => g.eachLayer(l => l.bringToBack && l.bringToBack()));
+    whenLoaded(cur, dropOld);
+    setTimeout(dropOld, 20000);   // 最多等 20 秒
+  } else dropOld();
 }
 map.on("moveend", () => buildSat());
 
