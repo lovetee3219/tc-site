@@ -1,6 +1,7 @@
-   data/stations.json
-   data/history/
-   data/history_store.json
-   data/grids/
-   .cache/
-   __pycache__/
+data/stations.json
+data/history/
+data/history_store.json
+data/grids/
+data/gmgsi/
+.cache/
+__pycache__/
