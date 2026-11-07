@@ -47,6 +47,10 @@ jobs:
         run: python scripts/fetch_grids.py --cache-only
         continue-on-error: true
 
+      - name: 放回全球合成紅外線雲圖（只沿用快取，下載交給「更新資料」）
+        run: python scripts/fetch_gmgsi.py --cache-only
+        continue-on-error: true
+
       - name: 下載測站觀測
         run: python scripts/fetch_stations.py
         env:

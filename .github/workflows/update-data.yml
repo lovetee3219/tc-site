@@ -36,7 +36,7 @@ jobs:
           python-version: "3.12"
 
       - name: 安裝套件
-        run: pip install eccodes ecmwf-opendata numpy scipy copernicusmarine
+        run: pip install eccodes ecmwf-opendata numpy scipy copernicusmarine xarray h5netcdf h5py pillow
 
       # 各模式上次的資料、更新狀態、更新紀錄、測站歷史都存在 GitHub 快取，每次執行接著用
       - uses: actions/cache@v5
@@ -66,6 +66,10 @@ jobs:
         env:   # Copernicus Marine 免費帳號，用來計算海洋熱含量
           COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
           COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
+
+      - name: 下載全球合成紅外線雲圖（NOAA GMGSI，每小時一張）
+        run: python scripts/fetch_gmgsi.py
+        continue-on-error: true
 
       - name: 下載測站觀測（不存進儲存庫，只隨網站發布）
         id: stations
