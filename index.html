@@ -290,15 +290,21 @@ const CONFIG = {
   },
   // NASA GIBS 圖層名稱（可到 NASA Worldview 查更多）
   // 每顆衛星的星下點經度：畫面離衛星太遠時就不下載那顆衛星的圖，節省流量
-  satLon: { "GOES-West": -137.2, "GOES-East": -75.2, "Himawari": 140.7 },
+  // MTG = 歐洲 Meteosat 第三代（0 度，涵蓋歐洲、非洲、大西洋東側）；IODC = Meteosat-9（東經 45.5 度，涵蓋印度洋、中東）
+  satLon: { "GOES-West": -137.2, "GOES-East": -75.2, "Himawari": 140.7, "MTG": 0, "IODC": 45.5 },
   // 每顆衛星負責的經度範圍（以相鄰兩顆衛星星下點的中間為界），重疊的地方只畫一顆，避免疊出「鬼影」
-  satRange: { "Himawari": [32.75, 181.75], "GOES-West": [181.75, 253.8], "GOES-East": [253.8, 392.75] },
+  satRange: { "Himawari": [93.1, 181.75], "GOES-West": [181.75, 253.8], "GOES-East": [253.8, 322.4],
+              "MTG": [322.4, 382.75], "IODC": [22.75, 93.1] },
   sat: {
-    ir:      { level: 6, layers: ["GOES-West_ABI_Band13_Clean_Infrared", "GOES-East_ABI_Band13_Clean_Infrared", "Himawari_AHI_Band13_Clean_Infrared"] },
+    // 「EUM:」開頭的是 EUMETSAT（歐洲氣象衛星組織）EUMETView 的圖層，補上歐洲、非洲、印度洋
+    ir:      { level: 6, layers: ["GOES-West_ABI_Band13_Clean_Infrared", "GOES-East_ABI_Band13_Clean_Infrared", "Himawari_AHI_Band13_Clean_Infrared",
+                                  "EUM:mtg_fd:ir105_hrfi", "EUM:msg_iodc:ir108"] },
     // 真實色：GOES 東／西用 NASA 的 GeoColor（白天真實色、夜間紅外線合成）；
     // NASA 沒有向日葵的真實色，向日葵範圍改用日本氣象廳的真實色圖（「JMA:」開頭）
-    truecolor: { level: 7, layers: ["GOES-West_ABI_GeoColor", "GOES-East_ABI_GeoColor", "JMA:REP/ETC"] },   // 向日葵畫在最上層
-    vis:     { level: 7, layers: ["GOES-West_ABI_Band2_Red_Visible_1km", "GOES-East_ABI_Band2_Red_Visible_1km", "Himawari_AHI_Band3_Red_Visible_1km"] },
+    truecolor: { level: 7, layers: ["GOES-West_ABI_GeoColor", "GOES-East_ABI_GeoColor", "JMA:REP/ETC",
+                                    "EUM:mtg_fd:rgb_truecolour", "EUM:msg_iodc:rgb_natural"] },
+    vis:     { level: 7, layers: ["GOES-West_ABI_Band2_Red_Visible_1km", "GOES-East_ABI_Band2_Red_Visible_1km", "Himawari_AHI_Band3_Red_Visible_1km",
+                                  "EUM:mtg_fd:vis06_hrfi", "EUM:msg_iodc:rgb_natural"] },
   },
   // 海陸邊界線：顏色與粗細可自行調整
   coast: {
@@ -344,7 +350,7 @@ L.control.zoom({ position: "topright" }).addTo(map);
 
 // 只畫海陸邊界線（Natural Earth 1:5000 萬海岸線，公有領域資料）
 map.attributionControl.setPrefix(false).addAttribution(
-  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a> · 海溫：NOAA · 海洋熱含量：Generated using E.U. <a href="https://marine.copernicus.eu/">Copernicus Marine Service</a> information' +
+  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://view.eumetsat.int/">EUMETSAT</a> · 海溫：NOAA · 海洋熱含量：Generated using E.U. <a href="https://marine.copernicus.eu/">Copernicus Marine Service</a> information' +
   ' · 路徑：<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://www.cwa.gov.tw/">中央氣象署</a>、JTWC、NCAR TCGP、' +
   'Based on data and products of <a href="https://www.ecmwf.int/">ECMWF</a> (CC BY 4.0)、<a href="https://deepmind.google.com/science/weatherlab">Google DeepMind Weather Lab</a>');
 map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
@@ -499,6 +505,19 @@ map.createPane("sat").style.zIndex = 250;
 // 只在指定經度範圍內下載圖磚的圖層，而且「跨越國際換日線」也能正確判斷。
 // Leaflet 內建的 bounds 只認得地圖上的一份經度（例如 -180～180），畫面移到換日線另一側（經度 > 180）時，
 // 會把那一側的圖磚全部當成範圍外而不下載，這就是之前換日線以東沒有雲圖的原因。
+// 圖層名稱 → 衛星（決定負責的經度範圍）
+const satKeyOf = name => name.startsWith("JMA:") ? "Himawari" : name.includes("mtg_fd") ? "MTG"
+  : name.includes("msg_iodc") ? "IODC" : name.split("_")[0];
+// EUMETView 是 WMS 服務：依地圖範圍即時產生圖片。時間要對齊該衛星的觀測間隔（MTG 每 10 分、Meteosat-9 每 15 分）
+const EUMETVIEW = "https://view.eumetsat.int/geoserver/ows";
+function eumLayer(name, t, level) {
+  const layer = name.slice(4), step = layer.startsWith("msg_") ? 15 : 10;
+  const tt = new Date(t); tt.setUTCMinutes(tt.getUTCMinutes() - tt.getUTCMinutes() % step, 0, 0);
+  return new LonRangeWMSLayer(EUMETVIEW, {
+    layers: layer, format: "image/png", transparent: true, version: "1.3.0", time: tt.toISOString().slice(0, 19) + "Z",
+    lonRange: CONFIG.satRange[satKeyOf(name)], pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0,
+  });
+}
 const LonRangeTileLayer = L.TileLayer.extend({
   options: { keepBuffer: 4 },   // 平移地圖時保留周圍多一點已下載的圖磚，移回來不必重新下載
   // 圖磚偶爾下載失敗（伺服器忙碌），1.5 秒後自動重試一次，減少「東缺一塊」
@@ -524,12 +543,26 @@ const LonRangeTileLayer = L.TileLayer.extend({
     return false;
   },
 });
+const LonRangeWMSLayer = L.TileLayer.WMS.extend({
+  options: { keepBuffer: 4 },
+  initialize: function (url, options) {
+    L.TileLayer.WMS.prototype.initialize.call(this, url, options);
+    delete this.wmsParams.lonRange; delete this.wmsParams.keepBuffer;   // 這兩個是網站自己用的設定，不送給伺服器
+    this.on("tileerror", e => {
+      const t = e.tile;
+      if (t.dataset.retried) return;
+      t.dataset.retried = "1";
+      setTimeout(() => { t.src = t.src + "&retry=1"; }, 1500);
+    });
+  },
+  _isValidTile: LonRangeTileLayer.prototype._isValidTile,
+});
 function activeSatLayers() {
   if (satMode === "off") return [];
   const b = map.getBounds(), w = b.getWest(), e = b.getEast();
   const names = satSource === "jma" ? ["Himawari_JMA"] : CONFIG.sat[satMode].layers;
   return names.filter(name => {
-    const sub = CONFIG.satLon[name.startsWith("JMA:") ? "Himawari" : name.split("_")[0]];
+    const sub = CONFIG.satLon[satKeyOf(name)];
     if (sub === undefined || e - w >= 300) return true;
     for (let lon = w; lon <= e + 5; lon += 5) {
       if (Math.abs((((lon - sub) % 360) + 540) % 360 - 180) < 80) return true;
@@ -547,13 +580,14 @@ function satGroup(i) {
     });
     const gibsLayer = (name, maxNative, minZoom) => new LonRangeTileLayer(
       `${GIBS_TILES}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
-        lonRange: CONFIG.satRange[name.split("_")[0]], subdomains: "abc",
+        lonRange: CONFIG.satRange[satKeyOf(name)], subdomains: "abc",
         pane: "sat", maxNativeZoom: maxNative, minZoom: minZoom || 0, maxZoom: 9, opacity: 0,
       });
     const fine = [];
     const g = satGroups[i] = L.layerGroup(activeSatLayers().map(name => {
       if (satSource === "jma") return jmaLayer(CONFIG.jma.products[satMode].path);
       if (name.startsWith("JMA:")) return jmaLayer(name.slice(4), true);
+      if (name.startsWith("EUM:")) return eumLayer(name, times[i], level);
       if (level <= 6) return gibsLayer(name, level);
       // 1 公里的圖（可見光、真實色）：先顯示 2 公里的版本（張數只有四分之一，很快出現），
       // 等它下載完，再下載 1 公里的精細版本疊在上面。精細版只在放大到第 7 級以上才需要
@@ -634,7 +668,8 @@ document.getElementById("satOpacity").addEventListener("input", e => { satOpacit
 
 // 切換資料來源：按鈕文字、說明與時間軸都跟著換
 const SAT_NOTE = {
-  gibs: "NASA GIBS：GOES 東／西與向日葵衛星。紅外線約 2 公里、可見光約 1 公里，比較清晰，但通常比實際時間晚 30～60 分鐘。印度洋與非洲上空沒有涵蓋。" +
+  gibs: "NASA GIBS：GOES 東／西與向日葵衛星。紅外線約 2 公里、可見光約 1 公里，比較清晰，但通常比實際時間晚 30～60 分鐘。" +
+    "歐洲、非洲與印度洋改用 EUMETSAT 的 Meteosat 衛星（紅外線為黑白圖）。" +
     "真實色：GOES 為 NASA 的 GeoColor（夜間改為紅外線合成）；NASA 沒有向日葵的真實色，該範圍改用日本氣象廳的圖。",
   jma: "向日葵九號（日本氣象廳提供）：只涵蓋西北太平洋與澳洲一帶。通常只比實際時間晚 10～20 分鐘，但圖磚較粗，約 4～5 公里一格。真實色在夜間會變暗。",
 };
