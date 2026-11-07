@@ -545,13 +545,31 @@ function satGroup(i) {
       pane: "sat", maxNativeZoom: CONFIG.jma.level, maxZoom: 9, opacity: 0,
       lonRange: mixed ? CONFIG.satRange.Himawari : [60, 222],
     });
-    satGroups[i] = L.layerGroup(activeSatLayers().map(name => satSource === "jma"
-      ? jmaLayer(CONFIG.jma.products[satMode].path)
-      : name.startsWith("JMA:") ? jmaLayer(name.slice(4), true)
-      : new LonRangeTileLayer(`${GIBS_TILES}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
-          lonRange: CONFIG.satRange[name.split("_")[0]], subdomains: "abc",
-          pane: "sat", maxNativeZoom: level, maxZoom: 9, opacity: 0,
-        })));
+    const gibsLayer = (name, maxNative, minZoom) => new LonRangeTileLayer(
+      `${GIBS_TILES}/${name}/default/${gibsTime(times[i])}/GoogleMapsCompatible_Level${level}/{z}/{y}/{x}.png`, {
+        lonRange: CONFIG.satRange[name.split("_")[0]], subdomains: "abc",
+        pane: "sat", maxNativeZoom: maxNative, minZoom: minZoom || 0, maxZoom: 9, opacity: 0,
+      });
+    const fine = [];
+    const g = satGroups[i] = L.layerGroup(activeSatLayers().map(name => {
+      if (satSource === "jma") return jmaLayer(CONFIG.jma.products[satMode].path);
+      if (name.startsWith("JMA:")) return jmaLayer(name.slice(4), true);
+      if (level <= 6) return gibsLayer(name, level);
+      // 1 公里的圖（可見光、真實色）：先顯示 2 公里的版本（張數只有四分之一，很快出現），
+      // 等它下載完，再下載 1 公里的精細版本疊在上面。精細版只在放大到第 7 級以上才需要
+      const coarse = gibsLayer(name, 6);
+      fine.push([coarse, gibsLayer(name, level, 7)]);
+      return coarse;
+    }));
+    fine.forEach(([coarse, sharp]) => {
+      const addSharp = () => {
+        if (g.hasLayer(sharp)) return;
+        sharp.setOpacity(i === frame ? 1 : 0);
+        g.addLayer(sharp);
+      };
+      coarse.once("load", addSharp);
+      setTimeout(addSharp, 8000);   // 粗略版太久沒載完，也照樣開始下載精細版
+    });
   }
   return satGroups[i];
 }
