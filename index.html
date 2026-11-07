@@ -85,6 +85,14 @@
   .sharp-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 12.5px; color: var(--ink-soft); }
   .seg.seg2 { grid-template-columns: repeat(2, 1fr); width: 120px; }
   .seg.seg-wide { width: 150px; }
+  .src-row { flex-direction: column; align-items: stretch; gap: 6px; }
+  .seg.seg3 { grid-template-columns: repeat(3, 1fr); }
+  .seg.seg3 button { padding: 6px 4px; white-space: nowrap; }
+  [hidden] { display: none !important; }
+  .seg button:disabled { opacity: .35; cursor: not-allowed; }
+  .ir-bar { height: 10px; border-radius: 2px; border: 1px solid var(--rule); margin-top: 6px;
+            background: linear-gradient(90deg, #000 0%, #fff 100%); }
+  .ir-ticks { display: flex; justify-content: space-between; font-family: var(--num); font-size: 11px; color: var(--ink-soft); }
   label.slider { display: block; font-size: 12.5px; color: var(--ink-soft); margin-top: 8px; }
 
   .storm-name { font-weight: 700; font-size: 14.5px; }
@@ -230,7 +238,12 @@
       </div>
     </div>
     <p class="note" id="satNote"></p>
-    <label class="row" style="font-size:13.5px"><input type="checkbox" id="ssecToggle" checked> 紅外線使用全球統一色階（SSEC）</label>
+    <p class="note" id="gmgsiNote"></p>
+    <div id="irLegend" hidden>
+      <div class="ir-bar" title="亮溫（°C）"></div>
+      <div class="ir-ticks"><span>40</span><span>20</span><span>0</span><span>-20</span><span>-40</span><span>-60</span><span>-80 °C</span></div>
+    </div>
+    <label class="row" id="ssecRow" style="font-size:13.5px"><input type="checkbox" id="ssecToggle" checked> 紅外線使用全球統一色階（SSEC）</label>
     <p class="note" id="irNote"></p>
   </section>
 
@@ -282,6 +295,7 @@
 const CONFIG = {
   center: [20, 135], zoom: 4,
   frames: 12,          // 動畫張數
+  gmgsiMaxZoom: 4,     // 紅外線：縮放到這個等級（含）以下，自動改用全球合成雲圖（NOAA GMGSI）
   stepMin: 20,         // 每張相隔幾分鐘
   latencyMin: 60,      // 查不到最新時間時，假設資料延遲幾分鐘
   satSource: "gibs",   // 預設衛星來源："gibs"（NASA，較清晰）或 "jma"（氣象廳，較即時）
@@ -352,7 +366,7 @@ L.control.zoom({ position: "topright" }).addTo(map);
 
 // 只畫海陸邊界線（Natural Earth 1:5000 萬海岸線，公有領域資料）
 map.attributionControl.setPrefix(false).addAttribution(
-  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://view.eumetsat.int/">EUMETSAT</a>、<a href="https://realearth.ssec.wisc.edu/">SSEC RealEarth</a> · 海溫：NOAA · 海洋熱含量：Generated using E.U. <a href="https://marine.copernicus.eu/">Copernicus Marine Service</a> information' +
+  '海岸線：<a href="https://www.naturalearthdata.com/">Natural Earth</a> · 衛星：<a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>、<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://view.eumetsat.int/">EUMETSAT</a>、<a href="https://realearth.ssec.wisc.edu/">SSEC RealEarth</a>、NOAA GMGSI · 海溫：NOAA · 海洋熱含量：Generated using E.U. <a href="https://marine.copernicus.eu/">Copernicus Marine Service</a> information' +
   ' · 路徑：<a href="https://www.jma.go.jp/">気象庁</a>、<a href="https://www.cwa.gov.tw/">中央氣象署</a>、JTWC、NCAR TCGP、' +
   'Based on data and products of <a href="https://www.ecmwf.int/">ECMWF</a> (CC BY 4.0)、<a href="https://deepmind.google.com/science/weatherlab">Google DeepMind Weather Lab</a>');
 map.createPane("coast").style.zIndex = 450;   // 在雲圖、雷達之上，路徑之下
@@ -433,9 +447,12 @@ function floor10(t) {
   d.setUTCMinutes(d.getUTCMinutes() - (d.getUTCMinutes() % 10));
   return d;
 }
+// 全球合成是每小時一張，動畫的間隔改成 60 分鐘
+const stepNow = () => CONFIG.stepMin;
 const makeTimes = t0 => Array.from({ length: CONFIG.frames }, (_, i) =>
-  new Date(t0.getTime() - (CONFIG.frames - 1 - i) * CONFIG.stepMin * 60000));
-let times = makeTimes(floor10(Date.now() - CONFIG.latencyMin * 60000));
+  new Date(t0.getTime() - (CONFIG.frames - 1 - i) * stepNow() * 60000));
+let times = (t0 => Array.from({ length: CONFIG.frames }, (_, i) =>   // 一開始的時間軸（之後依來源更新）
+  new Date(t0.getTime() - (CONFIG.frames - 1 - i) * CONFIG.stepMin * 60000)))(floor10(Date.now() - CONFIG.latencyMin * 60000));
 const gibsTime = d => d.toISOString().slice(0, 19) + "Z";
 const jmaTime = d => d.toISOString().slice(0, 19).replace(/[-:T]/g, "");   // 20261022071000
 
@@ -644,6 +661,105 @@ const LonRangeWMSLayer = L.TileLayer.WMS.extend({
   },
 });
 
+/* ---- 全球合成紅外線（NOAA GMGSI）----
+   資料由「更新資料」每小時整理成 data/gmgsi/ 下的灰階 PNG：像素值 1～255 對應亮溫，0 表示無資料。
+   網頁讀進來後依統一色階上色（仿 CyclonicWx：40°C 以上全黑、-90°C 以下全白，中間依溫度漸層）。 */
+let gmgsiIndex = null;
+const gmgsiData = {};   // 檔名 → Promise<{w, h, v: Uint8ClampedArray}>
+async function loadGmgsiIndex() {
+  gmgsiIndex = await fetch(`data/gmgsi/index.json?t=${Date.now()}`, { cache: "no-store" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+  return gmgsiIndex;
+}
+async function latestGmgsi() {
+  const idx = await loadGmgsiIndex();
+  if (!idx.frames.length) throw 0;
+  return new Date(idx.frames[idx.frames.length - 1].time);
+}
+function gmgsiFileFor(t) {   // 不晚於畫面時間的最近一張；都比較晚就取最舊的一張
+  if (!gmgsiIndex || !gmgsiIndex.frames.length) return null;
+  let f = gmgsiIndex.frames[0];
+  for (const x of gmgsiIndex.frames) if (new Date(x.time) <= t) f = x;
+  return f.file;
+}
+function gmgsiPixels(file) {
+  return gmgsiData[file] ||= new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.width; c.height = img.height;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, c.width, c.height).data, v = new Uint8ClampedArray(c.width * c.height);
+      for (let i = 0; i < v.length; i++) v[i] = d[i * 4];
+      res({ w: c.width, h: c.height, v });
+    };
+    img.onerror = rej;
+    img.src = `data/gmgsi/${file}`;
+  });
+}
+const IR_C = { warm: 40, cold: -90 };   // 色階端點（°C）
+function gmgsiGray(v) {   // 像素值 → 灰階（0 表示透明）
+  if (!v) return -1;
+  const m = gmgsiIndex, bt = m.btMin + (v - 1) / 254 * (m.btMax - m.btMin), c = bt - 273.15;
+  return Math.round(255 * Math.min(1, Math.max(0, (IR_C.warm - c) / (IR_C.warm - IR_C.cold))));
+}
+const GRAY_LUT = new Int16Array(256);
+function gmgsiValue(file, lat, lon) {   // 給游標讀值用：回傳亮溫（°C）或 null
+  const p = gmgsiLoaded[file];
+  if (!p || !gmgsiIndex) return null;
+  const m = gmgsiIndex, j = Math.floor((m.lat0 + m.res / 2 - lat) / m.res);
+  let i = Math.floor((((lon + 180) % 360 + 360) % 360) / m.res);
+  if (j < 0 || j >= p.h) return null;
+  i = Math.min(p.w - 1, i);
+  const v = p.v[j * p.w + i];
+  return v ? m.btMin + (v - 1) / 254 * (m.btMax - m.btMin) - 273.15 : null;
+}
+const gmgsiLoaded = {};
+const GmgsiLayer = L.GridLayer.extend({
+  createTile(coords, done) {
+    const tile = document.createElement("canvas");
+    tile.width = tile.height = 256;
+    const file = this.options.file;
+    if (!file) { setTimeout(() => done(null, tile)); return tile; }
+    gmgsiPixels(file).then(p => {
+      gmgsiLoaded[file] = p;
+      for (let k = 0; k < 256; k++) GRAY_LUT[k] = gmgsiGray(k);
+      const m = gmgsiIndex, ctx = tile.getContext("2d"), img = ctx.createImageData(256, 256), d = img.data;
+      const n = 256 * 2 ** coords.z, top = m.lat0 + m.res / 2;
+      for (let py = 0; py < 256; py++) {
+        const y = (coords.y * 256 + py + 0.5) / n;
+        const lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180 / Math.PI;
+        const j = Math.floor((top - lat) / m.res);
+        if (j < 0 || j >= p.h) continue;
+        for (let px = 0; px < 256; px++) {
+          const lon = (coords.x * 256 + px + 0.5) / n * 360 - 180;
+          const i = Math.min(p.w - 1, Math.floor((((lon + 180) % 360 + 360) % 360) / m.res));
+          const g = GRAY_LUT[p.v[j * p.w + i]];
+          if (g < 0) continue;
+          const k = (py * 256 + px) * 4;
+          d[k] = d[k + 1] = d[k + 2] = g; d[k + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      done(null, tile);
+    }).catch(() => done(new Error("gmgsi"), tile));
+    return tile;
+  },
+});
+// 是否該用全球合成雲圖：紅外線、縮放夠小、而且已經有資料
+const useGmgsi = () => satMode === "ir" && map.getZoom() <= CONFIG.gmgsiMaxZoom && !!(gmgsiIndex && gmgsiIndex.frames.length);
+function updateGmgsiNote() {
+  const on = useGmgsi();
+  document.getElementById("irLegend").hidden = !on;
+  const el = document.getElementById("gmgsiNote");
+  if (on) {
+    const f = gmgsiFileFor(times[frame]), t = f ? gmgsiIndex.frames.find(x => x.file === f).time : null;
+    el.textContent = `目前為全球合成紅外線（NOAA GMGSI，每小時一張，全球同一色階${t ? `，畫面時間 ${new Date(t).toISOString().slice(11, 16)} UTC` : ""}）。` +
+      `放大到第 ${CONFIG.gmgsiMaxZoom + 1} 級以上，會自動切換為各地的衛星雲圖。`;
+  } else {
+    el.textContent = satMode === "ir" ? `縮小到第 ${CONFIG.gmgsiMaxZoom} 級以下時，紅外線會自動切換為全球合成雲圖。` : "";
+  }
+}
 function activeSatLayers() {
   if (satMode === "off") return [];
   const b = map.getBounds(), w = b.getWest(), e = b.getEast();
@@ -671,6 +787,10 @@ function satGroup(i) {
         pane: "sat", maxNativeZoom: maxNative, minZoom: minZoom || 0, maxZoom: 9, opacity: 0,
       });
     const fine = [];
+    if (useGmgsi()) {   // 縮小看大範圍的紅外線：改用全球合成雲圖，全球同一色階
+      satGroups[i] = L.layerGroup([new GmgsiLayer({ file: gmgsiFileFor(times[i]), pane: "sat", opacity: 0, maxZoom: 9 })]);
+      return satGroups[i];
+    }
     const g = satGroups[i] = L.layerGroup(activeSatLayers().map(name => {
       if (satSource === "jma") return jmaLayer(CONFIG.jma.products[satMode].path);
       if (name.startsWith("JMA:")) return jmaLayer(name.slice(4), true);
@@ -731,7 +851,8 @@ function showSatFrame() {
   whenLoaded(g, pruneSat);   // 新的一張載完才移除舊的，避免閃一下空白
 }
 function buildSat(force) {
-  const key = satSource + ":" + satMode + ":" + activeSatLayers().join(",") + ":" + gibsTime(times[0]);
+  const key = satSource + ":" + satMode + ":" + (useGmgsi() ? "gmgsi" : activeSatLayers().join(",")) + ":" + gibsTime(times[0]);
+  updateGmgsiNote();
   if (!force && key === satKey) return;
   satKey = key;
   // 舊的雲圖先留著，等新的這一張下載完成才移除，換新圖或換頻道時畫面不會先變成一塊塊空白
@@ -768,7 +889,9 @@ function applySource() {
 }
 document.querySelectorAll("[data-src]").forEach(b => b.addEventListener("click", () => {
   if (timer) playBtn.click();   // 播放中先停止
-  satSource = b.dataset.src; applySource(); buildSat(true); refreshLatest();
+  satSource = b.dataset.src; applySource();
+  times = makeTimes(times[times.length - 1]);   // 先依新來源的間隔排好時間軸，再去查最新一張
+  showClock(); buildSat(true); refreshLatest();
 }));
 applySource();
 
@@ -1101,7 +1224,7 @@ document.getElementById("storms").addEventListener("change", e => {
 });
 
 /* ---------- 播放控制 ---------- */
-function setFrame(i) { frame = i; slider.value = i; showClock(); showSatFrame(); if (radarLayer) showRadar(); }
+function setFrame(i) { frame = i; slider.value = i; showClock(); showSatFrame(); if (radarLayer) showRadar(); updateGmgsiNote(); }
 slider.addEventListener("input", e => setFrame(+e.target.value));
 const playBtn = document.getElementById("play");
 let preparing = false;
@@ -1544,6 +1667,10 @@ async function updateReadout(ll) {
   const jobs = [];
   if (radarLayer && radarUrl) jobs.push(samplePixel(radarUrl, 7, ll).then(px => `<span class="k">雷達</span>${radarText(px)}`));
   Object.keys(GRID_STYLE).forEach(name => { if (gridLayers[name]) jobs.push(Promise.resolve(gridText(name, ll))); });
+  if (useGmgsi()) {   // 全球合成：顯示游標處的亮溫
+    const c = gmgsiValue(gmgsiFileFor(times[frame]), ll.lat, ll.lng);
+    jobs.push(Promise.resolve(`<span class="k">亮溫</span>` + (c === null ? "無資料" : `<b>${c.toFixed(0)}</b> °C`)));
+  }
   if (!jobs.length) { coordSub.hidden = true; return; }
   const parts = await Promise.all(jobs);
   if (my !== readSeq) return;   // 滑鼠已經移到別處，丟掉過時的結果
@@ -1584,6 +1711,10 @@ document.addEventListener("visibilitychange", () => {
 
 showClock(); buildSat(true); drawGrid(); loadTracks(); refreshLatest();
 loadSsecTimes().then(() => { if (satMode === "ir") buildSat(true); });
+// 全球合成雲圖的時間清單：開網頁時讀一次，之後每 10 分鐘更新
+const refreshGmgsi = () => loadGmgsiIndex().then(() => { if (satMode === "ir" && !timer) buildSat(true); }).catch(() => {});
+refreshGmgsi();
+setInterval(refreshGmgsi, 10 * 60000);
 setInterval(() => loadSsecTimes().then(() => { if (satMode === "ir" && !timer) buildSat(true); }), 10 * 60000);
 </script>
 </body>
